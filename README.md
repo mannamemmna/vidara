@@ -25,7 +25,7 @@ pip install -r requirements.txt
 ## Running the Web App (Development)
 
 ```bash
-python app.py
+python main.py
 ```
 App will be accessible at `http://<your-ip>:5000`.
 
@@ -34,5 +34,5 @@ App will be accessible at `http://<your-ip>:5000`.
 Run the app in the background robustly:
 
 ```bash
-gunicorn -w 4 -b 0.0.0.0:5000 app:app --daemon
+gunicorn -w 4 -b 0.0.0.0:5000 main:app --daemon
 ```
