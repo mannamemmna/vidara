@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Vidara.to Downloader (No Limits!)</title>
+    <title>Video Downloader - Vidara.to & Avtub.cx</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
@@ -13,13 +13,17 @@
 <body class="bg-gray-900 text-white min-h-screen flex items-center justify-center p-4">
     <div class="max-w-xl w-full bg-gray-800 rounded-2xl shadow-xl p-8 border border-gray-700">
         <div class="text-center mb-8">
-            <h1 class="text-3xl font-bold text-red-500 mb-2">Vidara Downloader</h1>
-            <p class="text-gray-400">Download video dari vidara.to kualitas terbaik, tanpa batasan ukuran!</p>
+            <h1 class="text-3xl font-bold text-red-500 mb-2">Video Downloader</h1>
+            <p class="text-gray-400">Download video kualitas terbaik, tanpa batasan ukuran!</p>
+            <div class="mt-3 flex justify-center gap-2 flex-wrap">
+                <span class="text-xs bg-gray-700 text-gray-300 px-3 py-1 rounded-full">vidara.to</span>
+                <span class="text-xs bg-gray-700 text-gray-300 px-3 py-1 rounded-full">avtub.cx</span>
+            </div>
         </div>
 
         <div class="mb-6">
-            <label for="vidaraUrl" class="block text-sm font-medium text-gray-300 mb-2">Link Vidara.to</label>
-            <input type="text" id="vidaraUrl" placeholder="https://vidara.to/v/axFdqa6rSvRBQ" 
+            <label for="videoUrl" class="block text-sm font-medium text-gray-300 mb-2">Link Video</label>
+            <input type="text" id="videoUrl" placeholder="https://vidara.to/v/... atau https://avtub.cx/..." 
                    class="w-full bg-gray-900 border border-gray-600 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-red-500 focus:ring-1 focus:ring-red-500 transition-colors">
         </div>
 
@@ -28,7 +32,7 @@
             <span>Mulai Download</span>
         </button>
 
-        <!-- Progress Area (Hidden by default) -->
+        <!-- Progress Area -->
         <div id="progressArea" class="hidden mt-8">
             <div class="flex justify-between text-sm text-gray-300 mb-2">
                 <span id="statusText">Mengambil video...</span>
@@ -39,17 +43,17 @@
             </div>
         </div>
 
-        <!-- Result Area (Hidden by default) -->
+        <!-- Result Area -->
         <div id="resultArea" class="hidden mt-8 text-center p-6 bg-gray-900 rounded-xl border border-gray-700">
             <h3 class="text-xl font-bold text-green-400 mb-2">✅ Selesai!</h3>
-            <p class="text-sm text-gray-400 mb-6">Video berhasil didownload ke server. Silakan klik tombol di bawah untuk menyimpannya ke devicemu. File akan terhapus otomatis dari server dalam 1 jam.</p>
+            <p class="text-sm text-gray-400 mb-6">Video berhasil didownload ke server. Klik tombol di bawah untuk menyimpannya ke devicemu. File akan terhapus otomatis dari server dalam 1 jam.</p>
             <a id="downloadLink" href="#" 
                class="inline-block bg-green-600 hover:bg-green-700 text-white font-semibold py-3 px-8 rounded-lg transition-colors">
                 ⬇️ Simpan Video
             </a>
             
             <div class="mt-4 pt-4 border-t border-gray-700">
-                <p class="text-xs text-gray-500 mb-2">Atau download manual pakai IDM/VLC lewat direct link ini:</p>
+                <p class="text-xs text-gray-500 mb-2">Atau download manual pakai IDM/VLC/Browser lewat direct link ini:</p>
                 <div class="flex gap-2">
                     <input type="text" id="m3u8Link" readonly class="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-xs text-gray-400">
                 </div>
@@ -57,9 +61,7 @@
         </div>
         
         <!-- Error Area -->
-        <div id="errorArea" class="hidden mt-6 p-4 bg-red-900/30 border border-red-500/50 rounded-lg text-red-200 text-sm text-center">
-            Error message here.
-        </div>
+        <div id="errorArea" class="hidden mt-6 p-4 bg-red-900/30 border border-red-500/50 rounded-lg text-red-200 text-sm text-center"></div>
     </div>
 
     <script>
@@ -79,9 +81,9 @@
         }
 
         async function startDownload() {
-            const urlInput = document.getElementById('vidaraUrl').value.trim();
+            const urlInput = document.getElementById('videoUrl').value.trim();
             if (!urlInput) {
-                showError("Masukkan link vidara.to terlebih dahulu!");
+                showError("Masukkan link video terlebih dahulu!");
                 return;
             }
 
@@ -131,7 +133,7 @@
                     if (data.status === 'downloading') {
                         document.getElementById('statusText').innerText = "Mendownload Video ke VPS...";
                         document.getElementById('progressBar').style.width = `${data.progress}%`;
-                        document.getElementById('percentText').innerText = `${data.progress.toFixed(1)}%`;
+                        document.getElementById('percentText').innerText = `${data.progress.toFixed(1)}`;
                     } 
                     else if (data.status === 'done') {
                         clearInterval(pollingInterval);
@@ -143,7 +145,7 @@
                         btn.disabled = false;
                         btn.classList.remove('opacity-50', 'cursor-not-allowed');
                         btn.innerHTML = '<span>Download Video Lain</span>';
-                        document.getElementById('vidaraUrl').value = "";
+                        document.getElementById('videoUrl').value = "";
                     }
                     else if (data.status === 'error') {
                         clearInterval(pollingInterval);
