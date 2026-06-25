@@ -22,6 +22,7 @@ VIDARA_REGEX = re.compile(r'https?://(?:www\.)?vidara\.(?:to|so)/v/([a-zA-Z0-9_-
 AVTUB_REGEX = re.compile(r'https?://(?:www\.)?avtub\.cx/(\d+)/?([^/]*)?/?')
 KURAKURA21_REGEX = re.compile(r'https?://(?:www\.)?kurakura21\.com/[^/]+/?')
 PLAYMOGO_REGEX = re.compile(r'https?://(?:www\.)?playmogo\.com/e/([a-zA-Z0-9]+)')
+VID30S_REGEX = re.compile(r'https?://(?:www\.)?vid30s\.com/d/([a-zA-Z0-9]+)')
 
 # Turtle4up.top AES-CBC decryption constants (static for all videos)
 TURTLE4UP_KEY = "kiemtienmua911ca".encode('utf-8')
@@ -225,6 +226,32 @@ def extract_playmogo_link(url):
     return None, None, f"playmogo_{filecode}"
 
 
+def extract_vid30s_link(url):
+    """Extract direct MP4 URL from vid30s.com (DoodStream via embed)"""
+    if not VID30S_REGEX.search(url):
+        return None, "vid30s"
+
+    filecode = VID30S_REGEX.search(url).group(1)
+
+    try:
+        # Fetch embed page directly
+        embed_url = f"https://vid30s.com/embed.php?bucket=temporary&id={filecode}"
+        resp = requests.get(embed_url, headers=HEADERS, timeout=10)
+        html = resp.text
+
+        # Extract <source src="...">
+        src_match = re.search(r'<source\s+src="([^"]+)"', html)
+        if src_match:
+            return src_match.group(1), f"vid30s_{filecode}"
+
+        return None, f"vid30s_{filecode}"
+
+    except Exception as e:
+        print(f"Vid30s extract error: {e}")
+
+    return None, f"vid30s_{filecode}"
+
+
 def extract_m3u8_from_embed(html, embed_url=""):
     """Extract m3u8 URL from an embed page (morencius-style JWPlayer)"""
 
@@ -384,8 +411,10 @@ def start_download():
         # Build final DoodStream URL
         rand_str = ''.join(random.choices(string.ascii_letters + string.digits, k=10))
         m3u8_url = f"{cdn_base}{rand_str}?token={token}&expiry={int(time.time()*1000)}"
+    elif VID30S_REGEX.search(url):
+        m3u8_url, label = extract_vid30s_link(url)
     else:
-        return jsonify({"error": "URL tidak didukung. Gunakan link vidara.to/so, avtub.cx, kurakura21.com, atau playmogo.com"}), 400
+        return jsonify({"error": "URL tidak didukung. Gunakan link vidara.to/so, avtub.cx, kurakura21.com, playmogo.com, atau vid30s.com"}), 400
 
     if not m3u8_url:
         return jsonify({"error": "Video tidak ditemukan. Pastikan URL valid."}), 400
@@ -444,6 +473,8 @@ def resolve_m3u8_url(url):
             rand_str = ''.join(random.choices(string.ascii_letters + string.digits, k=10))
             return f"{cdn_base}{rand_str}?token={token}&expiry={int(time.time()*1000)}", label
         return None, None
+    elif VID30S_REGEX.search(url):
+        return extract_vid30s_link(url)
     return None, None
 
 
@@ -469,6 +500,8 @@ def extract_video():
             m3u8_url = f"{cdn_base}{rand_str}?token={token}&expiry={int(time.time()*1000)}"
         else:
             return jsonify({"error": "Video tidak ditemukan"}), 400
+    elif VID30S_REGEX.search(url):
+        m3u8_url, label = extract_vid30s_link(url)
     else:
         return jsonify({"error": "URL tidak didukung"}), 400
 
