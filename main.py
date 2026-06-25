@@ -37,8 +37,10 @@ def _m3u8(html, embed_url=""):
                 if depth == 0:
                     packed = html[start:i + 1]; break
         else: return None
-        out = subprocess.run(['node', '-e', f'var r={packed};process.stdout.write(r);'],
-                             capture_output=True, text=True, timeout=15).stdout
+        # Safe: stdin pipe, not f-string injection
+        proc = subprocess.Popen(['node', '-e', 'process.stdin.on("data",d=>{var r=eval("("+d+")");process.stdout.write(r);});'],
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        out, err = proc.communicate(input=packed, timeout=15)
         if not out: return None
         lm = re.search(r'links\s*=\s*(\{[^}]*"hls\d?"[^}]*\})', out)
         if lm:
@@ -47,7 +49,7 @@ def _m3u8(html, embed_url=""):
                 for k in ('hls4', 'hls3', 'hls2'):
                     if links.get(k): return links[k]
             except: pass
-        mm = re.findall(r"['\"]((?:https?://|/)[^\s'\"<>]*master\.m3u8[^\s'\"<>]*)['\"]", out)
+        mm = re.findall(r"""['"]((?:https?://|/)[^\s'"<>]*master\.m3u8[^\s'"<>]*)['"]""", out)
         if mm: return mm[0]
     except: pass
     return None
@@ -63,34 +65,39 @@ def _abs(url, base_embed):
 @site(r'https?://(?:www\.)?vidara\.(?:to|so)/v/([a-zA-Z0-9_-]+)')
 def extract_vidara(url, m):
     fc = m.group(1)
-    r = requests.post('https://vidaratem.co/api/stream',
-                      json={'filecode': fc, 'device': 'web'}, headers=HEADERS, timeout=10).json()
-    return r.get('streaming_url'), f'vidara_{fc}'
+    try:
+        r = requests.post('https://vidaratem.co/api/stream',
+                          json={'filecode': fc, 'device': 'web'}, headers=HEADERS, timeout=10)
+        d = r.json()
+        return d.get('streaming_url'), f'vidara_{fc}'
+    except: pass
+    return None, f'vidara_{fc}'
 
 @site(r'https?://(?:www\.)?avtub\.cx/(\d+)/?')
 def extract_avtub(url, m):
     pid = m.group(1)
     r = requests.get(url, headers=HEADERS, timeout=10)
+    final_url = r.url
     # Follow redirect (avtub often redirects old IDs)
-    if r.url != url:
-        m2 = re.search(r'avtub\.cx/(\d+)/', r.url)
+    if final_url != url:
+        m2 = re.search(r'avtub\.cx/(\d+)/', final_url)
         if m2: pid = m2.group(1)
     iframe = re.search(r'<iframe[^>]+src="([^"]+)"', r.text, re.I)
     if not iframe: return None, f'avtub_{pid}'
     eu = iframe.group(1)
-    r2 = requests.get(eu, headers={**HEADERS, 'Referer': url}, timeout=10)
+    r2 = requests.get(eu, headers={**HEADERS, 'Referer': final_url}, timeout=10)
     mu = _m3u8(r2.text, eu)
-    return _abs(mu, eu), f'avtub_{pid}'
+    return _abs(mu, r2.url), f'avtub_{pid}'
 
 @site(r'https?://(?:www\.)?kurakura21\.com/[^/]+/?')
 def extract_kurakura21(url, m):
-    r = requests.get(url, headers=HEADERS, timeout=10)
+    r = requests.get(url, headers={**HEADERS, 'Referer': 'https://kurakura21.com/'}, timeout=10)
     pm = re.search(r'data-id="(\d+)"', r.text)
     if not pm: return None, 'kurakura21'
     pid = pm.group(1)
     r2 = requests.post('https://kurakura21.com/wp-admin/admin-ajax.php',
                        data={'action': 'muvipro_player_content', 'tab': 'p1', 'post_id': pid},
-                       headers=HEADERS, timeout=10)
+                       headers={**HEADERS, 'Referer': 'https://kurakura21.com/'}, timeout=10)
     im = re.search(r'iframe[^>]*src="([^"]*)"', r2.text)
     if not im: return None, f'kurakura21_{pid}'
     src = im.group(1)
@@ -131,7 +138,7 @@ def extract_playmogo(url, m):
 def extract_vid30s(url, m):
     fc = m.group(1)
     r = requests.get(f'https://vid30s.com/embed.php?bucket=temporary&id={fc}',
-                     headers=HEADERS, timeout=10)
+                     headers={**HEADERS, 'Referer': 'https://vid30s.com/'}, timeout=10)
     sm = re.search(r'<source\s+src="([^"]+)"', r.text)
     return (sm.group(1), f'vid30s_{fc}') if sm else (None, f'vid30s_{fc}')
 
@@ -223,7 +230,7 @@ def start_download():
     tid = str(uuid.uuid4())
     safe = re.sub(r'[^a-zA-Z0-9_-]', '_', label)[:50]
     fn = f'{safe}_{int(time.time())}.mp4'
-    t = {'status': 'queued', 'progress': 0, 'filename': fn, 'dl_url': dl_url, 'label': safe}
+    t = {'status': 'queued', 'progress': 0, 'filename': fn, 'dl_url': dl_url, 'label': safe, '_created': time.time()}
     with lock: tasks[tid] = t
     q.put({'tid': tid, 'dl_url': dl_url, 'out': os.path.join(DL_DIR, fn)})
     pos = 0
@@ -248,7 +255,7 @@ def list_tasks():
             'tasks': [{'task_id': tid, 'status': t['status'], 'progress': t['progress'],
                         'filename': t.get('filename', ''), 'label': t.get('label', ''),
                         'error_msg': t.get('error_msg')}
-                       for tid, t in sorted(tasks.items(), reverse=True)[:50]],
+                       for tid, t in sorted(tasks.items(), key=lambda x: x[1].get('_created', 0), reverse=True)[:50]],
             'max_concurrent': MAX_CONCURRENT})
 
 @app.route('/downloads/<path:filename>')
