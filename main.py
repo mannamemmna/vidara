@@ -3,6 +3,8 @@ import re
 import json
 import uuid
 import time
+import random
+import string
 import subprocess
 import requests
 import threading
@@ -19,6 +21,7 @@ os.makedirs(app.config['DOWNLOAD_FOLDER'], exist_ok=True)
 VIDARA_REGEX = re.compile(r'https?://(?:www\.)?vidara\.(?:to|so)/v/([a-zA-Z0-9_-]+)')
 AVTUB_REGEX = re.compile(r'https?://(?:www\.)?avtub\.cx/(\d+)/?([^/]*)?/?')
 KURAKURA21_REGEX = re.compile(r'https?://(?:www\.)?kurakura21\.com/[^/]+/?')
+PLAYMOGO_REGEX = re.compile(r'https?://(?:www\.)?playmogo\.com/e/([a-zA-Z0-9]+)')
 
 # Turtle4up.top AES-CBC decryption constants (static for all videos)
 TURTLE4UP_KEY = "kiemtienmua911ca".encode('utf-8')
@@ -183,6 +186,45 @@ def extract_kurakura21_link(url):
     return None, "kurakura21"
 
 
+def extract_playmogo_link(url):
+    """Extract direct video URL from playmogo.com (DoodStream)"""
+    if not PLAYMOGO_REGEX.search(url):
+        return None, None, "playmogo"
+
+    filecode = PLAYMOGO_REGEX.search(url).group(1)
+
+    try:
+        s = requests.Session()
+        resp = s.get(url, headers=HEADERS, timeout=10)
+        html = resp.text
+
+        # Extract pass_md5 path
+        md5_match = re.search(r"/pass_md5/([^'\"\s]+)", html)
+        if not md5_match:
+            return None, None, f"playmogo_{filecode}"
+
+        md5_url = f"https://playmogo.com{md5_match.group(0)}"
+
+        # Call pass_md5 → get CDN base URL
+        resp2 = s.get(md5_url, headers={
+            **HEADERS, "Referer": url, "X-Requested-With": "XMLHttpRequest"
+        }, timeout=10)
+
+        cdn_base = resp2.text.strip()
+        if cdn_base.startswith("<"):
+            return None, None, f"playmogo_{filecode}"
+
+        # Token is last segment of the pass_md5 path
+        token = md5_match.group(0).rstrip("'").split("/")[-1]
+
+        return cdn_base, token, f"playmogo_{filecode}"
+
+    except Exception as e:
+        print(f"Playmogo extract error: {e}")
+
+    return None, None, f"playmogo_{filecode}"
+
+
 def extract_m3u8_from_embed(html, embed_url=""):
     """Extract m3u8 URL from an embed page (morencius-style JWPlayer)"""
 
@@ -335,8 +377,15 @@ def start_download():
         m3u8_url, label = extract_avtub_link(url)
     elif KURAKURA21_REGEX.search(url):
         m3u8_url, label = extract_kurakura21_link(url)
+    elif PLAYMOGO_REGEX.search(url):
+        cdn_base, token, label = extract_playmogo_link(url)
+        if not token:
+            return jsonify({"error": "Video tidak ditemukan. Pastikan URL valid."}), 400
+        # Build final DoodStream URL
+        rand_str = ''.join(random.choices(string.ascii_letters + string.digits, k=10))
+        m3u8_url = f"{cdn_base}{rand_str}?token={token}&expiry={int(time.time()*1000)}"
     else:
-        return jsonify({"error": "URL tidak didukung. Gunakan link vidara.to, avtub.cx, atau kurakura21.com"}), 400
+        return jsonify({"error": "URL tidak didukung. Gunakan link vidara.to/so, avtub.cx, kurakura21.com, atau playmogo.com"}), 400
 
     if not m3u8_url:
         return jsonify({"error": "Video tidak ditemukan. Pastikan URL valid."}), 400
@@ -382,13 +431,19 @@ def download_file(filename):
 # ─── STREAMING (langsung ke user, tanpa simpan di server) ────────────────────
 
 def resolve_m3u8_url(url):
-    """Resolve any supported URL to an m3u8 streaming URL."""
+    """Resolve any supported URL to an m3u8/video streaming URL."""
     if VIDARA_REGEX.search(url):
         return extract_vidara_link(url)
     elif AVTUB_REGEX.search(url):
         return extract_avtub_link(url)
     elif KURAKURA21_REGEX.search(url):
         return extract_kurakura21_link(url)
+    elif PLAYMOGO_REGEX.search(url):
+        cdn_base, token, label = extract_playmogo_link(url)
+        if token:
+            rand_str = ''.join(random.choices(string.ascii_letters + string.digits, k=10))
+            return f"{cdn_base}{rand_str}?token={token}&expiry={int(time.time()*1000)}", label
+        return None, None
     return None, None
 
 
@@ -407,6 +462,13 @@ def extract_video():
         m3u8_url, label = extract_avtub_link(url)
     elif KURAKURA21_REGEX.search(url):
         m3u8_url, label = extract_kurakura21_link(url)
+    elif PLAYMOGO_REGEX.search(url):
+        cdn_base, token, label = extract_playmogo_link(url)
+        if token:
+            rand_str = ''.join(random.choices(string.ascii_letters + string.digits, k=10))
+            m3u8_url = f"{cdn_base}{rand_str}?token={token}&expiry={int(time.time()*1000)}"
+        else:
+            return jsonify({"error": "Video tidak ditemukan"}), 400
     else:
         return jsonify({"error": "URL tidak didukung"}), 400
 
