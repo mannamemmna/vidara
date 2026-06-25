@@ -30,7 +30,11 @@
 
         <button id="downloadBtn" onclick="startDownload()" 
                 class="w-full bg-red-600 hover:bg-red-700 text-white font-semibold py-3 px-4 rounded-lg transition-colors flex justify-center items-center gap-2">
-            <span>Mulai Download</span>
+            <span>⬇️ Download ke Server</span>
+        </button>
+        <button id="streamBtn" onclick="startStream()" 
+                class="w-full mt-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-4 rounded-lg transition-colors flex justify-center items-center gap-2">
+            <span>▶️ Tonton & Download Langsung (tanpa simpan di server)</span>
         </button>
 
         <!-- Progress Area -->
@@ -145,7 +149,7 @@
                         const btn = document.getElementById('downloadBtn');
                         btn.disabled = false;
                         btn.classList.remove('opacity-50', 'cursor-not-allowed');
-                        btn.innerHTML = '<span>Download Video Lain</span>';
+                        btn.innerHTML = '<span>⬇️ Download Video Lain</span>';
                         document.getElementById('videoUrl').value = "";
                     }
                     else if (data.status === 'error') {
@@ -157,6 +161,59 @@
                     console.error("Polling error", err);
                 }
             }, 1000);
+        }
+
+        async function startStream() {
+            const urlInput = document.getElementById('videoUrl').value.trim();
+            if (!urlInput) {
+                showError("Masukkan link video terlebih dahulu!");
+                return;
+            }
+
+            hideError();
+            document.getElementById('resultArea').classList.add('hidden');
+
+            const btn = document.getElementById('streamBtn');
+            const dlBtn = document.getElementById('downloadBtn');
+            btn.disabled = true;
+            dlBtn.disabled = true;
+            btn.classList.add('opacity-50', 'cursor-not-allowed');
+            dlBtn.classList.add('opacity-50', 'cursor-not-allowed');
+            btn.innerHTML = '<span>⏳ Mengambil video...</span>';
+
+            try {
+                const response = await fetch('/api/extract', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url: urlInput })
+                });
+
+                const data = await response.json();
+                
+                if (!response.ok) {
+                    throw new Error(data.error || "Gagal mengambil video");
+                }
+
+                // Open player page in new tab
+                window.open(data.player_url, '_blank');
+                
+                btn.innerHTML = '<span>✅ Player dibuka!</span>';
+                setTimeout(() => {
+                    btn.innerHTML = '<span>▶️ Tonton & Download Lagi</span>';
+                    btn.disabled = false;
+                    dlBtn.disabled = false;
+                    btn.classList.remove('opacity-50', 'cursor-not-allowed');
+                    dlBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+                }, 2000);
+
+            } catch (err) {
+                showError(err.message);
+                btn.innerHTML = '<span>▶️ Tonton & Download Lagi</span>';
+                btn.disabled = false;
+                dlBtn.disabled = false;
+                btn.classList.remove('opacity-50', 'cursor-not-allowed');
+                dlBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+            }
         }
     </script>
 </body>

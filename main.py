@@ -6,8 +6,8 @@ import time
 import subprocess
 import requests
 import threading
-from flask import Flask, render_template, request, jsonify, send_from_directory, url_for
-from werkzeug.utils import secure_filename
+from flask import Flask, render_template, request, jsonify, send_from_directory, url_for, Response, stream_with_context
+from urllib.parse import quote as url_quote
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import unpad
 
@@ -377,6 +377,295 @@ def check_status(task_id):
 @app.route('/downloads/<filename>')
 def download_file(filename):
     return send_from_directory(app.config['DOWNLOAD_FOLDER'], filename, as_attachment=True)
+
+
+# ─── STREAMING (langsung ke user, tanpa simpan di server) ────────────────────
+
+def resolve_m3u8_url(url):
+    """Resolve any supported URL to an m3u8 streaming URL."""
+    if VIDARA_REGEX.search(url):
+        return extract_vidara_link(url)
+    elif AVTUB_REGEX.search(url):
+        return extract_avtub_link(url)
+    elif KURAKURA21_REGEX.search(url):
+        return extract_kurakura21_link(url)
+    return None, None
+
+
+@app.route('/api/extract', methods=['POST'])
+def extract_video():
+    """Extract m3u8 URL and return it + a player URL."""
+    data = request.json
+    url = data.get('url', '').strip() if data else ''
+
+    if not url:
+        return jsonify({"error": "URL diperlukan"}), 400
+
+    if VIDARA_REGEX.search(url):
+        m3u8_url, label = extract_vidara_link(url)
+    elif AVTUB_REGEX.search(url):
+        m3u8_url, label = extract_avtub_link(url)
+    elif KURAKURA21_REGEX.search(url):
+        m3u8_url, label = extract_kurakura21_link(url)
+    else:
+        return jsonify({"error": "URL tidak didukung"}), 400
+
+    if not m3u8_url:
+        return jsonify({"error": "Video tidak ditemukan"}), 400
+
+    safe_name = re.sub(r'[^a-zA-Z0-9_-]', '_', label)[:50]
+
+    # Determine referer for proxying
+    referer = ""
+    if "turtle4up.top" in m3u8_url:
+        referer = "https://turtle4up.top/"
+    elif "morencius.com" in m3u8_url:
+        referer = "https://morencius.com/"
+
+    return jsonify({
+        "m3u8_url": m3u8_url,
+        "label": safe_name,
+        "referer": referer,
+        "player_url": f"/player?url={url_quote(m3u8_url)}&ref={url_quote(referer)}&title={url_quote(safe_name)}"
+    })
+
+
+@app.route('/player')
+def player_page():
+    """HLS.js player page — plays video directly without saving to server."""
+    m3u8_url = request.args.get('url', '')
+    referer = request.args.get('ref', '')
+    title = request.args.get('title', 'Video')
+
+    if not m3u8_url:
+        return "Missing url parameter", 400
+
+    return f'''<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{title} - Vidara Player</title>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@1"></script>
+    <style>
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        body {{ background: #0f0f0f; color: #fff; font-family: system-ui; display: flex;
+               flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; }}
+        .player-wrap {{ width: 100%; max-width: 900px; padding: 16px; }}
+        video {{ width: 100%; border-radius: 8px; background: #000; }}
+        h2 {{ font-size: 16px; color: #aaa; margin-bottom: 12px; text-align: center; }}
+        .status {{ text-align: center; color: #888; font-size: 14px; margin-top: 8px; }}
+        .btn-row {{ display: flex; gap: 8px; justify-content: center; margin-top: 12px; }}
+        .btn {{ padding: 8px 20px; border-radius: 6px; border: none; cursor: pointer; font-size: 14px; }}
+        .btn-dl {{ background: #e53935; color: #fff; }}
+        .btn-dl:hover {{ background: #c62828; }}
+    </style>
+</head>
+<body>
+    <div class="player-wrap">
+        <h2>{title}</h2>
+        <video id="video" controls autoplay playsinline></video>
+        <div class="status" id="status">Loading...</div>
+        <div class="btn-row">
+            <button class="btn btn-dl" id="dlBtn" onclick="downloadVideo()">Download Video</button>
+        </div>
+    </div>
+    <script>
+        const videoSrc = "/proxy/m3u8?url=" + encodeURIComponent("{m3u8_url}") + "&ref=" + encodeURIComponent("{referer}");
+        const video = document.getElementById('video');
+        const status = document.getElementById('status');
+
+        if (Hls.isSupported()) {{
+            const hls = new Hls({{
+                xhrSetup: (xhr, url) => {{
+                    // Proxy all requests through our server
+                    if (url.startsWith('http')) {{
+                        xhr.open('GET', '/proxy/segment?url=' + encodeURIComponent(url) + '&ref=' + encodeURIComponent("{referer}"), true);
+                    }}
+                }}
+            }});
+            hls.loadSource(videoSrc);
+            hls.attachMedia(video);
+            hls.on(Hls.Events.MANIFEST_PARSED, () => {{ status.textContent = "Ready — klik play"; video.play(); }});
+            hls.on(Hls.Events.ERROR, (e, d) => {{ status.textContent = "Error: " + (d.error?.message || "unknown"); }});
+        }} else if (video.canPlayType('application/vnd.apple.mpegurl')) {{
+            video.src = videoSrc;
+            video.addEventListener('loadedmetadata', () => video.play());
+        }} else {{
+            status.textContent = "Browser tidak support HLS";
+        }}
+
+        function downloadVideo() {{
+            status.textContent = "Downloading... file akan tersimpan ke device kamu (tidak disimpan di server)";
+            fetch('/api/stream', {{
+                method: 'POST',
+                headers: {{ 'Content-Type': 'application/json' }},
+                body: JSON.stringify({{ url: document.referrer || prompt("Masukkan URL asli:") }})
+            }})
+            .then(r => {{
+                if (!r.ok) return r.json().then(e => {{ throw new Error(e.error) }});
+                const disposition = r.headers.get('Content-Disposition');
+                let fn = '{title}.mp4';
+                if (disposition) {{ const m = disposition.match(/filename="?([^"]+)"?/); if (m) fn = m[1]; }}
+                return r.blob().then(b => {{
+                    const a = document.createElement('a'); a.href = URL.createObjectURL(b);
+                    a.download = fn; a.click(); URL.revokeObjectURL(a.href);
+                    status.textContent = "Download selesai!";
+                }});
+            }})
+            .catch(e => status.textContent = "Error: " + e.message);
+        }}
+    </script>
+</body>
+</html>'''
+
+
+@app.route('/proxy/m3u8')
+def proxy_m3u8():
+    """Proxy m3u8 manifest — rewrites segment URLs to go through our proxy."""
+    m3u8_url = request.args.get('url', '')
+    referer = request.args.get('ref', '')
+
+    if not m3u8_url:
+        return "Missing url", 400
+
+    headers = {**HEADERS}
+    if referer:
+        headers["Referer"] = referer
+
+    try:
+        resp = requests.get(m3u8_url, headers=headers, timeout=10)
+        content = resp.text
+
+        # Rewrite relative/absolute segment URLs to go through our proxy
+        base_url = m3u8_url.rsplit('/', 1)[0] + '/'
+
+        def rewrite_url(match):
+            seg_url = match.group(1).strip()
+            if seg_url.startswith('#'):
+                return match.group(0)  # Keep HLS tags as-is
+            # Make absolute
+            if seg_url.startswith('/'):
+                from urllib.parse import urlparse
+                parsed = urlparse(m3u8_url)
+                seg_url = f"{parsed.scheme}://{parsed.netloc}{seg_url}"
+            elif not seg_url.startswith('http'):
+                seg_url = base_url + seg_url
+            return f'/proxy/segment?url={url_quote(seg_url)}&ref={url_quote(referer)}'
+
+        # Rewrite URLs in m3u8 lines
+        lines = content.split('\n')
+        new_lines = []
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith('#'):
+                # Check for URI= in tags (e.g. #EXT-X-KEY:URI="...")
+                uri_match = re.search(r'URI="([^"]+)"', stripped)
+                if uri_match:
+                    uri = uri_match.group(1)
+                    if uri.startswith('/'):
+                        from urllib.parse import urlparse
+                        parsed = urlparse(m3u8_url)
+                        uri = f"{parsed.scheme}://{parsed.netloc}{uri}"
+                    elif not uri.startswith('http'):
+                        uri = base_url + uri
+                    proxied = f'/proxy/segment?url={url_quote(uri)}&ref={url_quote(referer)}'
+                    new_lines.append(stripped.replace(uri_match.group(0), f'URI="{proxied}"'))
+                else:
+                    new_lines.append(stripped)
+            elif stripped:
+                # This is a segment/sub-playlist URL
+                if stripped.startswith('/'):
+                    from urllib.parse import urlparse
+                    parsed = urlparse(m3u8_url)
+                    seg_url = f"{parsed.scheme}://{parsed.netloc}{stripped}"
+                elif not stripped.startswith('http'):
+                    seg_url = base_url + stripped
+                else:
+                    seg_url = stripped
+                new_lines.append(f'/proxy/segment?url={url_quote(seg_url)}&ref={url_quote(referer)}')
+            else:
+                new_lines.append(stripped)
+
+        return Response('\n'.join(new_lines), content_type='application/vnd.apple.mpegurl',
+                       headers={'Access-Control-Allow-Origin': '*'})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/proxy/segment')
+def proxy_segment():
+    """Proxy a single video segment or sub-playlist — streams through without saving."""
+    seg_url = request.args.get('url', '')
+    referer = request.args.get('ref', '')
+
+    if not seg_url:
+        return "Missing url", 400
+
+    headers = {**HEADERS}
+    if referer:
+        headers["Referer"] = referer
+
+    try:
+        resp = requests.get(seg_url, headers=headers, timeout=30)
+        content_type = resp.headers.get('Content-Type', 'application/octet-stream')
+
+        # If this is an m3u8 sub-playlist, rewrite it like /proxy/m3u8 does
+        if 'mpegurl' in content_type or seg_url.endswith('.m3u8') or '.m3u8?' in seg_url:
+            content = resp.text
+            base_url = seg_url.split('?')[0].rsplit('/', 1)[0] + '/'
+
+            lines = content.split('\n')
+            new_lines = []
+            for line in lines:
+                stripped = line.strip()
+                if stripped.startswith('#'):
+                    uri_match = re.search(r'URI="([^"]+)"', stripped)
+                    if uri_match:
+                        uri = uri_match.group(1)
+                        if uri.startswith('/'):
+                            from urllib.parse import urlparse
+                            parsed = urlparse(seg_url)
+                            uri = f"{parsed.scheme}://{parsed.netloc}{uri}"
+                        elif not uri.startswith('http'):
+                            uri = base_url + uri
+                        proxied = f'/proxy/segment?url={url_quote(uri)}&ref={url_quote(referer)}'
+                        new_lines.append(stripped.replace(uri_match.group(0), f'URI="{proxied}"'))
+                    else:
+                        new_lines.append(stripped)
+                elif stripped:
+                    if stripped.startswith('/'):
+                        from urllib.parse import urlparse
+                        parsed = urlparse(seg_url)
+                        s_url = f"{parsed.scheme}://{parsed.netloc}{stripped}"
+                    elif not stripped.startswith('http'):
+                        s_url = base_url + stripped
+                    else:
+                        s_url = stripped
+                    new_lines.append(f'/proxy/segment?url={url_quote(s_url)}&ref={url_quote(referer)}')
+                else:
+                    new_lines.append(stripped)
+
+            return Response('\n'.join(new_lines), content_type='application/vnd.apple.mpegurl',
+                           headers={'Access-Control-Allow-Origin': '*'})
+
+        # Regular segment — stream through
+        def generate():
+            for chunk in resp.iter_content(chunk_size=65536):
+                if chunk:
+                    yield chunk
+
+        return Response(
+            stream_with_context(generate()),
+            content_type=content_type,
+            headers={
+                'Access-Control-Allow-Origin': '*',
+                'Cache-Control': 'no-cache',
+                'X-Accel-Buffering': 'no',
+            }
+        )
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 if __name__ == '__main__':
