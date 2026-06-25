@@ -1,4 +1,4 @@
-# Video Downloader (Vidara.to & Avtub.cx)
+# Video Downloader (Vidara.to, Avtub.cx & Kurakura21.com)
 
 Web-based video downloader that supports multiple sites. Bypasses the Telegram 50MB upload limit by downloading videos to a VPS and serving them via HTTP.
 
@@ -8,6 +8,7 @@ Web-based video downloader that supports multiple sites. Bypasses the Telegram 5
 |------|-----------|--------|
 | vidara.to | `https://vidara.to/v/{id}` | ✅ Working |
 | avtub.cx | `https://avtub.cx/{id}/{slug}/` | ✅ Working |
+| kurakura21.com | `https://kurakura21.com/{slug}/` | ✅ Working |
 
 ## Features
 
@@ -16,6 +17,7 @@ Web-based video downloader that supports multiple sites. Bypasses the Telegram 5
 - No file size limits (bypasses Telegram 50MB bot API limit)
 - Auto-cleanup: files older than 1 hour are deleted automatically
 - Dark UI with Tailwind CSS
+- AES-CBC decryption for turtle4up.top embeds (kurakura21.com)
 
 ## Quick Start
 
@@ -32,7 +34,7 @@ gunicorn -w 4 -b 0.0.0.0:5000 main:app
 
 ## How It Works
 
-1. User pastes a video URL (vidara.to or avtub.cx)
+1. User pastes a video URL (vidara.to, avtub.cx, or kurakura21.com)
 2. Backend extracts the direct m3u8/mp4 streaming URL
 3. `yt-dlp` downloads the video to the VPS (`downloads/` folder)
 4. User downloads the file via browser

@@ -8,6 +8,8 @@ import requests
 import threading
 from flask import Flask, render_template, request, jsonify, send_from_directory, url_for
 from werkzeug.utils import secure_filename
+from Crypto.Cipher import AES
+from Crypto.Util.Padding import unpad
 
 app = Flask(__name__)
 app.config['DOWNLOAD_FOLDER'] = os.path.join(os.path.dirname(os.path.abspath(__name__)), 'downloads')
@@ -16,6 +18,11 @@ os.makedirs(app.config['DOWNLOAD_FOLDER'], exist_ok=True)
 
 VIDARA_REGEX = re.compile(r'https?://(?:www\.)?vidara\.to/v/([a-zA-Z0-9_-]+)')
 AVTUB_REGEX = re.compile(r'https?://(?:www\.)?avtub\.cx/(\d+)/?([^/]*)?/?')
+KURAKURA21_REGEX = re.compile(r'https?://(?:www\.)?kurakura21\.com/[^/]+/?')
+
+# Turtle4up.top AES-CBC decryption constants (static for all videos)
+TURTLE4UP_KEY = "kiemtienmua911ca".encode('utf-8')
+TURTLE4UP_IV = "1234567890oiuytr".encode('utf-8')
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -87,6 +94,93 @@ def extract_avtub_link(url):
         print(f"Avtub extract error: {e}")
 
     return None, f"avtub_{post_id}"
+
+
+def decrypt_turtle4up(encrypted_hex):
+    """Decrypt AES-CBC encrypted response from turtle4up.top"""
+    encrypted = bytes.fromhex(encrypted_hex.strip())
+    cipher = AES.new(TURTLE4UP_KEY, AES.MODE_CBC, TURTLE4UP_IV)
+    decrypted = unpad(cipher.decrypt(encrypted), AES.block_size)
+    return json.loads(decrypted.decode('utf-8'))
+
+
+def extract_kurakura21_link(url):
+    """Extract m3u8 URL from kurakura21.com via turtle4up.top encrypted embed"""
+    if not KURAKURA21_REGEX.search(url):
+        return None, "kurakura21"
+
+    try:
+        # 1. Fetch kurakura21 page to get post ID
+        resp = requests.get(url, headers=HEADERS, timeout=10)
+        post_match = re.search(r'data-id="(\d+)"', resp.text)
+        if not post_match:
+            return None, "kurakura21"
+        post_id = post_match.group(1)
+
+        # 2. AJAX to get iframe embed URL
+        resp2 = requests.post(
+            "https://kurakura21.com/wp-admin/admin-ajax.php",
+            data={"action": "muvipro_player_content", "tab": "p1", "post_id": post_id},
+            headers=HEADERS, timeout=10
+        )
+        iframe_match = re.search(r'iframe[^>]*src="([^"]*)"', resp2.text)
+        if not iframe_match:
+            return None, f"kurakura21_{post_id}"
+
+        iframe_src = iframe_match.group(1)
+
+        # 3. Extract video ID from turtle4up.top URL
+        hash_match = re.search(r'turtle4up\.top/#(.+)', iframe_src)
+        if not hash_match:
+            # Check if it's a morencius.com or other embed
+            if "morencius.com" in iframe_src or "embed/" in iframe_src:
+                # Fall through to avtub-style extraction
+                resp3 = requests.get(iframe_src, headers={**HEADERS, "Referer": url}, timeout=10)
+                m3u8 = extract_m3u8_from_embed(resp3.text, iframe_src)
+                if m3u8:
+                    if m3u8.startswith('/'):
+                        domain = re.match(r'(https?://[^/]+)', iframe_src)
+                        m3u8 = (domain.group(1) if domain else "") + m3u8
+                    return m3u8, f"kurakura21_{post_id}"
+            return None, f"kurakura21_{post_id}"
+
+        video_id = hash_match.group(1)
+
+        # 4. Fetch encrypted video info from turtle4up.top
+        resp3 = requests.get(
+            f"https://turtle4up.top/api/v1/video?id={video_id}",
+            headers={**HEADERS, "Referer": "https://turtle4up.top/"},
+            timeout=10
+        )
+        data = decrypt_turtle4up(resp3.text)
+
+        # 5. Find m3u8 URL from various source fields
+        m3u8_path = None
+        for field in ['hlsVideoTiktok', 'hlsVideoGoogle', 'cf', 'source']:
+            val = data.get(field, "")
+            if val and isinstance(val, str) and val.strip():
+                m3u8_path = val.strip()
+                break
+
+        if not m3u8_path:
+            return None, f"kurakura21_{post_id}"
+
+        # 6. Build full URL
+        if m3u8_path.startswith("//"):
+            m3u8_url = "https:" + m3u8_path
+        elif m3u8_path.startswith("/"):
+            m3u8_url = "https://turtle4up.top" + m3u8_path
+        else:
+            m3u8_url = m3u8_path
+
+        title = data.get("title", f"kurakura21_{post_id}")
+        safe_label = re.sub(r'[^a-zA-Z0-9_-]', '_', title)[:50]
+        return m3u8_url, f"kurakura21_{safe_label}"
+
+    except Exception as e:
+        print(f"Kurakura21 extract error: {e}")
+
+    return None, "kurakura21"
 
 
 def extract_m3u8_from_embed(html, embed_url=""):
@@ -185,8 +279,16 @@ def download_worker(task_id, m3u8_url, output_path):
     """Download video using yt-dlp with progress tracking."""
     cmd = [
         "yt-dlp", "--newline", "-f", "best",
-        "-o", output_path, "--no-check-certificates", m3u8_url
+        "-o", output_path, "--no-check-certificates"
     ]
+
+    # Add referer for turtle4up.top / kurakura21 embeds
+    if "turtle4up.top" in m3u8_url:
+        cmd += ["--referer", "https://turtle4up.top/"]
+    elif "morencius.com" in m3u8_url:
+        cmd += ["--referer", "https://morencius.com/"]
+
+    cmd.append(m3u8_url)
 
     process = subprocess.Popen(
         cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True
@@ -231,8 +333,10 @@ def start_download():
         m3u8_url, label = extract_vidara_link(url)
     elif AVTUB_REGEX.search(url):
         m3u8_url, label = extract_avtub_link(url)
+    elif KURAKURA21_REGEX.search(url):
+        m3u8_url, label = extract_kurakura21_link(url)
     else:
-        return jsonify({"error": "URL tidak didukung. Gunakan link vidara.to atau avtub.cx"}), 400
+        return jsonify({"error": "URL tidak didukung. Gunakan link vidara.to, avtub.cx, atau kurakura21.com"}), 400
 
     if not m3u8_url:
         return jsonify({"error": "Video tidak ditemukan. Pastikan URL valid."}), 400
