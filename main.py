@@ -1,767 +1,389 @@
-import os
-import re
-import json
-import uuid
-import time
-import random
-import string
-import subprocess
+import os, re, json, uuid, time, random, string, subprocess, threading, queue
 import requests
-import threading
-from flask import Flask, render_template, request, jsonify, send_from_directory, url_for, Response, stream_with_context
-from urllib.parse import quote as url_quote
+from flask import Flask, render_template, request, jsonify, send_from_directory, url_for
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import unpad
 
 app = Flask(__name__)
-app.config['DOWNLOAD_FOLDER'] = os.path.join(os.path.dirname(os.path.abspath(__name__)), 'downloads')
+DL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'downloads')
+os.makedirs(DL_DIR, exist_ok=True)
 
-os.makedirs(app.config['DOWNLOAD_FOLDER'], exist_ok=True)
+# ─── REGEX ────────────────────────────────────────────────────────────────────
+VIDARA_REGEX       = re.compile(r'https?://(?:www\.)?vidara\.(?:to|so)/v/([a-zA-Z0-9_-]+)')
+AVTUB_REGEX        = re.compile(r'https?://(?:www\.)?avtub\.cx/(\d+)/?([^/]*)?/?')
+KURAKURA21_REGEX   = re.compile(r'https?://(?:www\.)?kurakura21\.com/[^/]+/?')
+PLAYMOGO_REGEX     = re.compile(r'https?://(?:www\.)?playmogo\.com/e/([a-zA-Z0-9]+)')
+VID30S_REGEX       = re.compile(r'https?://(?:www\.)?vid30s\.com/d/([a-zA-Z0-9]+)')
 
-VIDARA_REGEX = re.compile(r'https?://(?:www\.)?vidara\.(?:to|so)/v/([a-zA-Z0-9_-]+)')
-AVTUB_REGEX = re.compile(r'https?://(?:www\.)?avtub\.cx/(\d+)/?([^/]*)?/?')
-KURAKURA21_REGEX = re.compile(r'https?://(?:www\.)?kurakura21\.com/[^/]+/?')
-PLAYMOGO_REGEX = re.compile(r'https?://(?:www\.)?playmogo\.com/e/([a-zA-Z0-9]+)')
-VID30S_REGEX = re.compile(r'https?://(?:www\.)?vid30s\.com/d/([a-zA-Z0-9]+)')
-
-# Turtle4up.top AES-CBC decryption constants (static for all videos)
-TURTLE4UP_KEY = "kiemtienmua911ca".encode('utf-8')
-TURTLE4UP_IV = "1234567890oiuytr".encode('utf-8')
+# ─── TURTLE4UP AES ────────────────────────────────────────────────────────────
+TURTLE_KEY = "kiemtienmua911ca".encode()
+TURTLE_IV  = "1234567890oiuytr".encode()
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
 
-tasks = {}
+# ─── MULTI-USER DOWNLOAD QUEUE ────────────────────────────────────────────────
+MAX_CONCURRENT = 3       # download berapa banyak dalam satu waktu
+download_queue = queue.Queue()
+active_downloads = {}    # {task_id: {...}} — yang sedang/selesai
+active_count = 0
+queue_lock = threading.Lock()
 
-# ─── SITE-SPECIFIC EXTRACTORS ────────────────────────────────────────────────
+def queue_worker():
+    """Background worker: ambil task dari queue, download, update status."""
+    global active_count
+    while True:
+        task = download_queue.get()
+        tid = task['tid']
+        with queue_lock:
+            if tid in active_downloads:
+                active_downloads[tid]['status'] = 'queued'
+        # Tunggu giliran: max MAX_CONCURRENT berjalan bersamaan
+        while True:
+            with queue_lock:
+                if active_count < MAX_CONCURRENT:
+                    active_count += 1
+                    break
+            time.sleep(1)
 
-def extract_vidara_link(url):
-    """Extract m3u8 URL from vidara.to"""
-    match = VIDARA_REGEX.search(url)
-    if not match:
-        return None, "vidara"
-    filecode = match.group(1)
+        with queue_lock:
+            if tid in active_downloads:
+                active_downloads[tid]['status'] = 'downloading'
+                active_downloads[tid]['progress'] = 0
+
+        # ── Download ──
+        url     = task['url']
+        out     = task['out']
+        dl_url  = task['dl_url']
+        err_msg = None
+        try:
+            cmd = ['yt-dlp', '--newline', '-f', 'best',
+                   '-o', out, '--no-check-certificates']
+            if 'turtle4up.top' in dl_url:
+                cmd += ['--referer', 'https://turtle4up.top/']
+            elif 'morencius.com' in dl_url:
+                cmd += ['--referer', 'https://morencius.com/']
+            cmd.append(dl_url)
+
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                universal_newlines=True)
+            pct_re = re.compile(r'\[download\]\s+([\d\.]+)%')
+            for line in proc.stdout:
+                m = pct_re.search(line)
+                if m:
+                    try:
+                        pct = float(m.group(1))
+                        with queue_lock:
+                            if tid in active_downloads:
+                                active_downloads[tid]['progress'] = pct
+                    except ValueError:
+                        pass
+            proc.wait()
+            if proc.returncode != 0 or not os.path.exists(out):
+                err_msg = 'Download gagal'
+        except Exception as e:
+            err_msg = str(e)
+
+        with queue_lock:
+            active_count -= 1
+            if tid in active_downloads:
+                if err_msg:
+                    active_downloads[tid]['status'] = 'error'
+                    active_downloads[tid]['error_msg'] = err_msg
+                else:
+                    active_downloads[tid]['status'] = 'done'
+                    active_downloads[tid]['progress'] = 100
+                    active_downloads[tid]['filename'] = os.path.basename(out)
+        download_queue.task_done()
+
+threading.Thread(target=queue_worker, daemon=True).start()
+
+# ─── FILE CLEANUP ─────────────────────────────────────────────────────────────
+def cleanup_loop():
+    while True:
+        now = time.time()
+        for f in os.listdir(DL_DIR):
+            fp = os.path.join(DL_DIR, f)
+            if os.path.isfile(fp) and os.stat(fp).st_mtime < now - 3600:
+                try: os.remove(fp)
+                except: pass
+        time.sleep(600)
+threading.Thread(target=cleanup_loop, daemon=True).start()
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SITE EXTRACTORS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def extract_vidara(url):
+    m = VIDARA_REGEX.search(url)
+    if not m: return None, 'vidara'
+    fc = m.group(1)
     try:
-        resp = requests.post("https://vidaratem.co/api/stream",
-                             json={"filecode": filecode, "device": "web"},
-                             headers=HEADERS, timeout=10)
-        data = resp.json()
-        if "streaming_url" in data:
-            return data["streaming_url"], f"vidara_{filecode}"
-    except Exception as e:
-        print(f"Vidara extract error: {e}")
-    return None, f"vidara_{filecode}"
+        r = requests.post('https://vidaratem.co/api/stream',
+                          json={'filecode': fc, 'device': 'web'},
+                          headers=HEADERS, timeout=10)
+        d = r.json()
+        if 'streaming_url' in d:
+            return d['streaming_url'], f'vidara_{fc}'
+    except: pass
+    return None, f'vidara_{fc}'
 
-
-def extract_avtub_link(url):
-    """Extract m3u8 URL from avtub.cx via morencius.com embed"""
-    match = AVTUB_REGEX.search(url)
-    if not match:
-        return None, "avtub"
-    post_id = match.group(1)
-
+def extract_avtub(url):
+    m = AVTUB_REGEX.search(url)
+    if not m: return None, 'avtub'
+    pid = m.group(1)
     try:
-        # 1. Fetch the avtub.cx video page
-        resp = requests.get(url, headers=HEADERS, timeout=10)
-        html = resp.text
+        r = requests.get(url, headers=HEADERS, timeout=10)
+        iframe = re.search(r'<iframe[^>]+src="([^"]+)"', r.text, re.I)
+        if not iframe: return None, f'avtub_{pid}'
+        eu = iframe.group(1)
+        r2 = requests.get(eu, headers={**HEADERS, 'Referer': url}, timeout=10)
+        mu = _extract_m3u8(r2.text, eu)
+        if mu:
+            if mu.startswith('/'):
+                dom = re.match(r'(https?://[^/]+)', eu)
+                mu = (dom.group(1) if dom else '') + mu
+            return mu, f'avtub_{pid}'
+    except: pass
+    return None, f'avtub_{pid}'
 
-        # 2. Find the embed iframe URL
-        iframe_match = re.search(
-            r'<IFRAME\s+SRC="(https?://[^"]+/embed/[^"]+)"', html, re.IGNORECASE
-        )
-        if not iframe_match:
-            iframe_match = re.search(
-                r'<iframe[^>]+src="(https?://[^"]+/embed/[^"]+)"', html, re.IGNORECASE
-            )
-        if not iframe_match:
-            return None, f"avtub_{post_id}"
+def decrypt_turtle(hex_data):
+    c = AES.new(TURTLE_KEY, AES.MODE_CBC, TURTLE_IV)
+    return json.loads(unpad(c.decrypt(bytes.fromhex(hex_data.strip())), AES.block_size).decode())
 
-        embed_url = iframe_match.group(1)
-
-        # 3. Fetch the embed page
-        resp2 = requests.get(embed_url, headers={**HEADERS, "Referer": url}, timeout=10)
-        embed_html = resp2.text
-
-        # 4. Extract m3u8 from embed page
-        m3u8_url = extract_m3u8_from_embed(embed_html, embed_url)
-
-        if m3u8_url:
-            # Make relative URLs absolute
-            if m3u8_url.startswith('/'):
-                domain_match = re.match(r'(https?://[^/]+)', embed_url)
-                embed_domain = domain_match.group(1) if domain_match else ""
-                m3u8_url = embed_domain + m3u8_url
-            return m3u8_url, f"avtub_{post_id}"
-
-    except Exception as e:
-        print(f"Avtub extract error: {e}")
-
-    return None, f"avtub_{post_id}"
-
-
-def decrypt_turtle4up(encrypted_hex):
-    """Decrypt AES-CBC encrypted response from turtle4up.top"""
-    encrypted = bytes.fromhex(encrypted_hex.strip())
-    cipher = AES.new(TURTLE4UP_KEY, AES.MODE_CBC, TURTLE4UP_IV)
-    decrypted = unpad(cipher.decrypt(encrypted), AES.block_size)
-    return json.loads(decrypted.decode('utf-8'))
-
-
-def extract_kurakura21_link(url):
-    """Extract m3u8 URL from kurakura21.com via turtle4up.top encrypted embed"""
-    if not KURAKURA21_REGEX.search(url):
-        return None, "kurakura21"
-
+def extract_kurakura21(url):
+    if not KURAKURA21_REGEX.search(url): return None, 'kurakura21'
     try:
-        # 1. Fetch kurakura21 page to get post ID
-        resp = requests.get(url, headers=HEADERS, timeout=10)
-        post_match = re.search(r'data-id="(\d+)"', resp.text)
-        if not post_match:
-            return None, "kurakura21"
-        post_id = post_match.group(1)
+        r = requests.get(url, headers=HEADERS, timeout=10)
+        pm = re.search(r'data-id="(\d+)"', r.text)
+        if not pm: return None, 'kurakura21'
+        pid = pm.group(1)
+        r2 = requests.post('https://kurakura21.com/wp-admin/admin-ajax.php',
+                           data={'action': 'muvipro_player_content', 'tab': 'p1', 'post_id': pid},
+                           headers=HEADERS, timeout=10)
+        im = re.search(r'iframe[^>]*src="([^"]*)"', r2.text)
+        if not im: return None, f'kurakura21_{pid}'
+        src = im.group(1)
+        hm = re.search(r'turtle4up\.top/#(.+)', src)
+        if not hm:
+            if 'morencius.com' in src or 'embed/' in src:
+                r3 = requests.get(src, headers={**HEADERS, 'Referer': url}, timeout=10)
+                mu = _extract_m3u8(r3.text, src)
+                if mu:
+                    if mu.startswith('/'):
+                        dom = re.match(r'(https?://[^/]+)', src)
+                        mu = (dom.group(1) if dom else '') + mu
+                    return mu, f'kurakura21_{pid}'
+            return None, f'kurakura21_{pid}'
+        vid = hm.group(1)
+        r3 = requests.get(f'https://turtle4up.top/api/v1/video?id={vid}',
+                          headers={**HEADERS, 'Referer': 'https://turtle4up.top/'}, timeout=10)
+        data = decrypt_turtle(r3.text)
+        path = None
+        for f in ['hlsVideoTiktok', 'hlsVideoGoogle', 'cf', 'source']:
+            v = data.get(f, '')
+            if v and isinstance(v, str) and v.strip():
+                path = v.strip(); break
+        if not path: return None, f'kurakura21_{pid}'
+        if path.startswith('//'): mu = 'https:' + path
+        elif path.startswith('/'): mu = 'https://turtle4up.top' + path
+        else: mu = path
+        title = data.get('title', f'kurakura21_{pid}')
+        safe = re.sub(r'[^a-zA-Z0-9_-]', '_', title)[:50]
+        return mu, f'kurakura21_{safe}'
+    except: pass
+    return None, 'kurakura21'
 
-        # 2. AJAX to get iframe embed URL
-        resp2 = requests.post(
-            "https://kurakura21.com/wp-admin/admin-ajax.php",
-            data={"action": "muvipro_player_content", "tab": "p1", "post_id": post_id},
-            headers=HEADERS, timeout=10
-        )
-        iframe_match = re.search(r'iframe[^>]*src="([^"]*)"', resp2.text)
-        if not iframe_match:
-            return None, f"kurakura21_{post_id}"
-
-        iframe_src = iframe_match.group(1)
-
-        # 3. Extract video ID from turtle4up.top URL
-        hash_match = re.search(r'turtle4up\.top/#(.+)', iframe_src)
-        if not hash_match:
-            # Check if it's a morencius.com or other embed
-            if "morencius.com" in iframe_src or "embed/" in iframe_src:
-                # Fall through to avtub-style extraction
-                resp3 = requests.get(iframe_src, headers={**HEADERS, "Referer": url}, timeout=10)
-                m3u8 = extract_m3u8_from_embed(resp3.text, iframe_src)
-                if m3u8:
-                    if m3u8.startswith('/'):
-                        domain = re.match(r'(https?://[^/]+)', iframe_src)
-                        m3u8 = (domain.group(1) if domain else "") + m3u8
-                    return m3u8, f"kurakura21_{post_id}"
-            return None, f"kurakura21_{post_id}"
-
-        video_id = hash_match.group(1)
-
-        # 4. Fetch encrypted video info from turtle4up.top
-        resp3 = requests.get(
-            f"https://turtle4up.top/api/v1/video?id={video_id}",
-            headers={**HEADERS, "Referer": "https://turtle4up.top/"},
-            timeout=10
-        )
-        data = decrypt_turtle4up(resp3.text)
-
-        # 5. Find m3u8 URL from various source fields
-        m3u8_path = None
-        for field in ['hlsVideoTiktok', 'hlsVideoGoogle', 'cf', 'source']:
-            val = data.get(field, "")
-            if val and isinstance(val, str) and val.strip():
-                m3u8_path = val.strip()
-                break
-
-        if not m3u8_path:
-            return None, f"kurakura21_{post_id}"
-
-        # 6. Build full URL
-        if m3u8_path.startswith("//"):
-            m3u8_url = "https:" + m3u8_path
-        elif m3u8_path.startswith("/"):
-            m3u8_url = "https://turtle4up.top" + m3u8_path
-        else:
-            m3u8_url = m3u8_path
-
-        title = data.get("title", f"kurakura21_{post_id}")
-        safe_label = re.sub(r'[^a-zA-Z0-9_-]', '_', title)[:50]
-        return m3u8_url, f"kurakura21_{safe_label}"
-
-    except Exception as e:
-        print(f"Kurakura21 extract error: {e}")
-
-    return None, "kurakura21"
-
-
-def extract_playmogo_link(url):
-    """Extract direct video URL from playmogo.com (DoodStream)"""
-    if not PLAYMOGO_REGEX.search(url):
-        return None, None, "playmogo"
-
-    filecode = PLAYMOGO_REGEX.search(url).group(1)
-
+def extract_playmogo(url):
+    m = PLAYMOGO_REGEX.search(url)
+    if not m: return None, None, 'playmogo'
+    fc = m.group(1)
     try:
         s = requests.Session()
-        resp = s.get(url, headers=HEADERS, timeout=10)
-        html = resp.text
+        r = s.get(url, headers=HEADERS, timeout=10)
+        mm = re.search(r"/pass_md5/([^'\"]+)", r.text)
+        if not mm: return None, None, f'playmogo_{fc}'
+        md5_url = f'https://playmogo.com{mm.group(0)}'
+        r2 = s.get(md5_url, headers={**HEADERS, 'Referer': url, 'X-Requested-With': 'XMLHttpRequest'}, timeout=10)
+        base = r2.text.strip()
+        if base.startswith('<'): return None, None, f'playmogo_{fc}'
+        token = mm.group(0).rstrip("'").split('/')[-1]
+        return base, token, f'playmogo_{fc}'
+    except: pass
+    return None, None, f'playmogo_{fc}'
 
-        # Extract pass_md5 path
-        md5_match = re.search(r"/pass_md5/([^'\"\s]+)", html)
-        if not md5_match:
-            return None, None, f"playmogo_{filecode}"
-
-        md5_url = f"https://playmogo.com{md5_match.group(0)}"
-
-        # Call pass_md5 → get CDN base URL
-        resp2 = s.get(md5_url, headers={
-            **HEADERS, "Referer": url, "X-Requested-With": "XMLHttpRequest"
-        }, timeout=10)
-
-        cdn_base = resp2.text.strip()
-        if cdn_base.startswith("<"):
-            return None, None, f"playmogo_{filecode}"
-
-        # Token is last segment of the pass_md5 path
-        token = md5_match.group(0).rstrip("'").split("/")[-1]
-
-        return cdn_base, token, f"playmogo_{filecode}"
-
-    except Exception as e:
-        print(f"Playmogo extract error: {e}")
-
-    return None, None, f"playmogo_{filecode}"
-
-
-def extract_vid30s_link(url):
-    """Extract direct MP4 URL from vid30s.com (DoodStream via embed)"""
-    if not VID30S_REGEX.search(url):
-        return None, "vid30s"
-
-    filecode = VID30S_REGEX.search(url).group(1)
-
+def extract_vid30s(url):
+    m = VID30S_REGEX.search(url)
+    if not m: return None, 'vid30s'
+    fc = m.group(1)
     try:
-        # Fetch embed page directly
-        embed_url = f"https://vid30s.com/embed.php?bucket=temporary&id={filecode}"
-        resp = requests.get(embed_url, headers=HEADERS, timeout=10)
-        html = resp.text
+        r = requests.get(f'https://vid30s.com/embed.php?bucket=temporary&id={fc}',
+                         headers=HEADERS, timeout=10)
+        sm = re.search(r'<source\s+src="([^"]+)"', r.text)
+        if sm: return sm.group(1), f'vid30s_{fc}'
+    except: pass
+    return None, f'vid30s_{fc}'
 
-        # Extract <source src="...">
-        src_match = re.search(r'<source\s+src="([^"]+)"', html)
-        if src_match:
-            return src_match.group(1), f"vid30s_{filecode}"
-
-        return None, f"vid30s_{filecode}"
-
-    except Exception as e:
-        print(f"Vid30s extract error: {e}")
-
-    return None, f"vid30s_{filecode}"
-
-
-def extract_m3u8_from_embed(html, embed_url=""):
-    """Extract m3u8 URL from an embed page (morencius-style JWPlayer)"""
-
-    # Method 1: m3u8 directly in HTML
-    direct = re.findall(r'https?://[^\s"\'<>]+\.m3u8[^\s"\'<>]*', html)
-    if direct:
-        return direct[0]
-
+def _extract_m3u8(html, embed_url=''):
+    # Method 1: m3u8 in HTML
+    d = re.findall(r'https?://[^\s"\'<>]+\.m3u8[^\s"\'<>]*', html)
+    if d: return d[0]
     # Method 2: "file": "xxx.m3u8"
-    file_attr = re.search(r'"file"\s*:\s*"([^"]*\.m3u8[^"]*)"', html)
-    if file_attr:
-        return file_attr.group(1)
-
-    # Method 3: Deobfuscate eval-packed JWPlayer config via Node.js
+    fa = re.search(r'"file"\s*:\s*"([^"]*\.m3u8[^"]*)"', html)
+    if fa: return fa.group(1)
+    # Method 3: JS deobfuscation
     try:
-        # Find the eval block with balanced parentheses
-        idx = html.find("eval(function(p,a,c,k,e,d)")
-        if idx < 0:
-            return None
-
+        idx = html.find('eval(function(p,a,c,k,e,d)')
+        if idx < 0: return None
         depth = 0
-        start = idx + 4  # after "eval"
+        start = idx + 4
         for i in range(start, len(html)):
-            if html[i] == '(':
-                depth += 1
+            if html[i] == '(': depth += 1
             elif html[i] == ')':
                 depth -= 1
                 if depth == 0:
-                    packed = html[start:i + 1]
-                    break
-        else:
-            return None
-
-        # Unpack: replace eval(X) → just evaluate X (the unpacker returns a string)
-        node_script = f"var result = {packed}; process.stdout.write(result);"
-
-        result = subprocess.run(
-            ["node", "-e", node_script],
-            capture_output=True, text=True, timeout=15
-        )
-
-        unpacked = result.stdout
-        if not unpacked:
-            return None
-
-        # Look for the links object: links={"hls4":"...", "hls2":"...", "hls3":"..."}
-        links_match = re.search(
-            r'links\s*=\s*(\{[^}]*"hls\d?"\s*:\s*"[^"]*"[^}]*\})', unpacked
-        )
-        if links_match:
+                    packed = html[start:i+1]; break
+        else: return None
+        node = f'var result = {packed}; process.stdout.write(result);'
+        r = subprocess.run(['node', '-e', node], capture_output=True, text=True, timeout=15)
+        out = r.stdout
+        if not out: return None
+        lm = re.search(r'links\s*=\s*(\{[^}]*"hls\d?"\s*:\s*"[^"]*"[^}]*\})', out)
+        if lm:
             try:
-                links = json.loads(links_match.group(1))
-                # Priority: hls4 > hls3 > hls2
-                for key in ("hls4", "hls3", "hls2"):
-                    if key in links and links[key]:
-                        return links[key]
-            except json.JSONDecodeError:
-                pass
-
-        # Fallback: find any m3u8 in unpacked code
-        m3u8_matches = re.findall(r'[\'"]((?:https?://|/)[^\s\'"<>]*master\.m3u8[^\s\'"<>]*)[\'"]', unpacked)
-        if m3u8_matches:
-            return m3u8_matches[0]
-
-    except Exception as e:
-        print(f"Deobfuscation error: {e}")
-
+                links = json.loads(lm.group(1))
+                for k in ('hls4','hls3','hls2'):
+                    if k in links and links[k]: return links[k]
+            except: pass
+        mm = re.findall(r"['\"]((?:https?://|/)[^\s'\"<>]*master\.m3u8[^\s'\"<>]*)['\"]", out)
+        if mm: return mm[0]
+    except: pass
     return None
 
+def resolve_video_url(url):
+    """Extract download URL + label from any supported site."""
+    if VIDARA_REGEX.search(url):
+        return extract_vidara(url)
+    elif AVTUB_REGEX.search(url):
+        return extract_avtub(url)
+    elif KURAKURA21_REGEX.search(url):
+        return extract_kurakura21(url)
+    elif PLAYMOGO_REGEX.search(url):
+        base, token, label = extract_playmogo(url)
+        if token:
+            rand = ''.join(random.choices(string.ascii_letters + string.digits, k=10))
+            return f'{base}{rand}?token={token}&expiry={int(time.time()*1000)}', label
+        return None, label
+    elif VID30S_REGEX.search(url):
+        return extract_vid30s(url)
+    return None, None
 
-# ─── CLEANUP ─────────────────────────────────────────────────────────────────
-
-def cleanup_old_files():
-    """Hapus file yang sudah lebih dari 1 jam."""
-    while True:
-        now = time.time()
-        for filename in os.listdir(app.config['DOWNLOAD_FOLDER']):
-            filepath = os.path.join(app.config['DOWNLOAD_FOLDER'], filename)
-            if os.path.isfile(filepath):
-                if os.stat(filepath).st_mtime < now - 3600:
-                    try:
-                        os.remove(filepath)
-                        print(f"Cleaned up: {filepath}")
-                    except Exception as e:
-                        print(f"Cleanup error: {e}")
-        time.sleep(600)
-
-threading.Thread(target=cleanup_old_files, daemon=True).start()
-
-
-# ─── DOWNLOAD WORKER ─────────────────────────────────────────────────────────
-
-def download_worker(task_id, m3u8_url, output_path):
-    """Download video using yt-dlp with progress tracking."""
-    cmd = [
-        "yt-dlp", "--newline", "-f", "best",
-        "-o", output_path, "--no-check-certificates"
-    ]
-
-    # Add referer for turtle4up.top / kurakura21 embeds
-    if "turtle4up.top" in m3u8_url:
-        cmd += ["--referer", "https://turtle4up.top/"]
-    elif "morencius.com" in m3u8_url:
-        cmd += ["--referer", "https://morencius.com/"]
-
-    cmd.append(m3u8_url)
-
-    process = subprocess.Popen(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True
-    )
-    percent_regex = re.compile(r'\[download\]\s+([\d\.]+)%')
-
-    for line in process.stdout:
-        match = percent_regex.search(line)
-        if match:
-            try:
-                tasks[task_id]["progress"] = float(match.group(1))
-            except ValueError:
-                pass
-
-    process.wait()
-
-    if process.returncode == 0 and os.path.exists(output_path):
-        tasks[task_id]["status"] = "done"
-        tasks[task_id]["progress"] = 100
-    else:
-        tasks[task_id]["status"] = "error"
-        tasks[task_id]["error_msg"] = "Gagal mendownload menggunakan yt-dlp"
-
-
-# ─── ROUTES ──────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# ROUTES
+# ═══════════════════════════════════════════════════════════════════════════════
 
 @app.route('/')
 def index():
     return render_template('index.html')
 
-
 @app.route('/api/start_download', methods=['POST'])
 def start_download():
-    data = request.json
-    url = data.get('url', '').strip()
-
+    """Submit URL → extract → queue download → return task_id."""
+    url = (request.json or {}).get('url', '').strip()
     if not url:
-        return jsonify({"error": "URL diperlukan"}), 400
+        return jsonify({'error': 'URL diperlukan'}), 400
 
-    # Detect site
-    if VIDARA_REGEX.search(url):
-        m3u8_url, label = extract_vidara_link(url)
-    elif AVTUB_REGEX.search(url):
-        m3u8_url, label = extract_avtub_link(url)
-    elif KURAKURA21_REGEX.search(url):
-        m3u8_url, label = extract_kurakura21_link(url)
-    elif PLAYMOGO_REGEX.search(url):
-        cdn_base, token, label = extract_playmogo_link(url)
-        if not token:
-            return jsonify({"error": "Video tidak ditemukan. Pastikan URL valid."}), 400
-        # Build final DoodStream URL
-        rand_str = ''.join(random.choices(string.ascii_letters + string.digits, k=10))
-        m3u8_url = f"{cdn_base}{rand_str}?token={token}&expiry={int(time.time()*1000)}"
-    elif VID30S_REGEX.search(url):
-        m3u8_url, label = extract_vid30s_link(url)
-    else:
-        return jsonify({"error": "URL tidak didukung. Gunakan link vidara.to/so, avtub.cx, kurakura21.com, playmogo.com, atau vid30s.com"}), 400
+    # Extract video source
+    dl_url, label = resolve_video_url(url)
+    if not dl_url:
+        return jsonify({'error': 'Gagal mengekstrak video. Cek URL atau coba lagi.'}), 400
 
-    if not m3u8_url:
-        return jsonify({"error": "Video tidak ditemukan. Pastikan URL valid."}), 400
+    tid = str(uuid.uuid4())
+    safe = re.sub(r'[^a-zA-Z0-9_-]', '_', label)[:50]
+    filename = f'{safe}_{int(time.time())}.mp4'
+    out_path = os.path.join(DL_DIR, filename)
 
-    task_id = str(uuid.uuid4())
-    filename = f"{label}_{int(time.time())}.mp4"
-    output_path = os.path.join(app.config['DOWNLOAD_FOLDER'], filename)
-
-    tasks[task_id] = {
-        "status": "downloading",
-        "progress": 0,
-        "filename": filename,
-        "m3u8_url": m3u8_url
+    task = {
+        'status': 'queued',
+        'progress': 0,
+        'filename': filename,
+        'dl_url': dl_url,
+        'url': url,
+        'label': safe,
     }
+    with queue_lock:
+        active_downloads[tid] = task
 
-    threading.Thread(target=download_worker, args=(task_id, m3u8_url, output_path)).start()
+    download_queue.put({'tid': tid, 'url': url, 'dl_url': dl_url, 'out': out_path})
 
-    return jsonify({"task_id": task_id, "m3u8_url": m3u8_url})
+    # Info queue position
+    pos = 0
+    with queue_lock:
+        pending = list(download_queue.queue)
+        for i, t in enumerate(pending):
+            if t['tid'] == tid:
+                pos = i + 1
+                break
 
+    return jsonify({
+        'task_id': tid,
+        'queue_position': pos,
+        'max_concurrent': MAX_CONCURRENT,
+        'filename': filename,
+    })
 
 @app.route('/api/status/<task_id>')
 def check_status(task_id):
-    if task_id not in tasks:
-        return jsonify({"error": "Task tidak ditemukan"}), 404
+    with queue_lock:
+        task = active_downloads.get(task_id)
+    if not task:
+        return jsonify({'error': 'Task tidak ditemukan'}), 404
 
-    task = tasks[task_id]
-    response = {"status": task["status"], "progress": task["progress"]}
+    resp = {
+        'status': task['status'],
+        'progress': task['progress'],
+        'filename': task.get('filename', ''),
+    }
+    if task['status'] == 'done':
+        resp['download_url'] = url_for('download_file', filename=task['filename'])
+    elif task['status'] == 'error':
+        resp['error_msg'] = task.get('error_msg', 'Unknown error')
 
-    if task["status"] == "done":
-        response["download_url"] = url_for('download_file', filename=task["filename"])
-    elif task["status"] == "error":
-        response["error_msg"] = task.get("error_msg", "Unknown error")
-        response["m3u8_url"] = task.get("m3u8_url")
+    # Queue position
+    pos = 0
+    with queue_lock:
+        for i, t in enumerate(list(download_queue.queue)):
+            if t['tid'] == task_id:
+                pos = i + 1
+                break
+    resp['queue_position'] = pos
 
-    return jsonify(response)
+    return jsonify(resp)
 
+@app.route('/api/tasks')
+def list_tasks():
+    """Return all tasks (ringkasan)."""
+    with queue_lock:
+        result = []
+        for tid, t in sorted(active_downloads.items(),
+                             key=lambda x: x[1].get('_created', 0), reverse=True):
+            result.append({
+                'task_id': tid,
+                'status': t['status'],
+                'progress': t['progress'],
+                'filename': t.get('filename', ''),
+                'label': t.get('label', ''),
+                'error_msg': t.get('error_msg'),
+            })
+    return jsonify({'tasks': result[:50], 'max_concurrent': MAX_CONCURRENT})
 
 @app.route('/downloads/<filename>')
 def download_file(filename):
-    return send_from_directory(app.config['DOWNLOAD_FOLDER'], filename, as_attachment=True)
+    return send_from_directory(DL_DIR, filename, as_attachment=True)
 
-
-# ─── STREAMING (langsung ke user, tanpa simpan di server) ────────────────────
-
-def resolve_m3u8_url(url):
-    """Resolve any supported URL to an m3u8/video streaming URL."""
-    if VIDARA_REGEX.search(url):
-        return extract_vidara_link(url)
-    elif AVTUB_REGEX.search(url):
-        return extract_avtub_link(url)
-    elif KURAKURA21_REGEX.search(url):
-        return extract_kurakura21_link(url)
-    elif PLAYMOGO_REGEX.search(url):
-        cdn_base, token, label = extract_playmogo_link(url)
-        if token:
-            rand_str = ''.join(random.choices(string.ascii_letters + string.digits, k=10))
-            return f"{cdn_base}{rand_str}?token={token}&expiry={int(time.time()*1000)}", label
-        return None, None
-    elif VID30S_REGEX.search(url):
-        return extract_vid30s_link(url)
-    return None, None
-
-
-@app.route('/api/extract', methods=['POST'])
-def extract_video():
-    """Extract m3u8 URL and return it + a player URL."""
-    data = request.json
-    url = data.get('url', '').strip() if data else ''
-
-    if not url:
-        return jsonify({"error": "URL diperlukan"}), 400
-
-    if VIDARA_REGEX.search(url):
-        m3u8_url, label = extract_vidara_link(url)
-    elif AVTUB_REGEX.search(url):
-        m3u8_url, label = extract_avtub_link(url)
-    elif KURAKURA21_REGEX.search(url):
-        m3u8_url, label = extract_kurakura21_link(url)
-    elif PLAYMOGO_REGEX.search(url):
-        cdn_base, token, label = extract_playmogo_link(url)
-        if token:
-            rand_str = ''.join(random.choices(string.ascii_letters + string.digits, k=10))
-            m3u8_url = f"{cdn_base}{rand_str}?token={token}&expiry={int(time.time()*1000)}"
-        else:
-            return jsonify({"error": "Video tidak ditemukan"}), 400
-    elif VID30S_REGEX.search(url):
-        m3u8_url, label = extract_vid30s_link(url)
-    else:
-        return jsonify({"error": "URL tidak didukung"}), 400
-
-    if not m3u8_url:
-        return jsonify({"error": "Video tidak ditemukan"}), 400
-
-    safe_name = re.sub(r'[^a-zA-Z0-9_-]', '_', label)[:50]
-
-    # Determine referer for proxying
-    referer = ""
-    if "turtle4up.top" in m3u8_url:
-        referer = "https://turtle4up.top/"
-    elif "morencius.com" in m3u8_url:
-        referer = "https://morencius.com/"
-
-    return jsonify({
-        "m3u8_url": m3u8_url,
-        "label": safe_name,
-        "referer": referer,
-        "player_url": f"/player?url={url_quote(m3u8_url)}&ref={url_quote(referer)}&title={url_quote(safe_name)}"
-    })
-
-
-@app.route('/player')
-def player_page():
-    """HLS.js player page — plays video directly without saving to server."""
-    m3u8_url = request.args.get('url', '')
-    referer = request.args.get('ref', '')
-    title = request.args.get('title', 'Video')
-
-    if not m3u8_url:
-        return "Missing url parameter", 400
-
-    return f'''<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{title} - Vidara Player</title>
-    <script src="https://cdn.jsdelivr.net/npm/hls.js@1"></script>
-    <style>
-        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-        body {{ background: #0f0f0f; color: #fff; font-family: system-ui; display: flex;
-               flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; }}
-        .player-wrap {{ width: 100%; max-width: 900px; padding: 16px; }}
-        video {{ width: 100%; border-radius: 8px; background: #000; }}
-        h2 {{ font-size: 16px; color: #aaa; margin-bottom: 12px; text-align: center; }}
-        .status {{ text-align: center; color: #888; font-size: 14px; margin-top: 8px; }}
-        .btn-row {{ display: flex; gap: 8px; justify-content: center; margin-top: 12px; }}
-        .btn {{ padding: 8px 20px; border-radius: 6px; border: none; cursor: pointer; font-size: 14px; }}
-        .btn-dl {{ background: #e53935; color: #fff; }}
-        .btn-dl:hover {{ background: #c62828; }}
-    </style>
-</head>
-<body>
-    <div class="player-wrap">
-        <h2>{title}</h2>
-        <video id="video" controls autoplay playsinline></video>
-        <div class="status" id="status">Loading...</div>
-        <div class="btn-row">
-            <button class="btn btn-dl" id="dlBtn" onclick="downloadVideo()">Download Video</button>
-        </div>
-    </div>
-    <script>
-        const videoSrc = "/proxy/m3u8?url=" + encodeURIComponent("{m3u8_url}") + "&ref=" + encodeURIComponent("{referer}");
-        const video = document.getElementById('video');
-        const status = document.getElementById('status');
-
-        if (Hls.isSupported()) {{
-            const hls = new Hls({{
-                xhrSetup: (xhr, url) => {{
-                    // Proxy all requests through our server
-                    if (url.startsWith('http')) {{
-                        xhr.open('GET', '/proxy/segment?url=' + encodeURIComponent(url) + '&ref=' + encodeURIComponent("{referer}"), true);
-                    }}
-                }}
-            }});
-            hls.loadSource(videoSrc);
-            hls.attachMedia(video);
-            hls.on(Hls.Events.MANIFEST_PARSED, () => {{ status.textContent = "Ready — klik play"; video.play(); }});
-            hls.on(Hls.Events.ERROR, (e, d) => {{ status.textContent = "Error: " + (d.error?.message || "unknown"); }});
-        }} else if (video.canPlayType('application/vnd.apple.mpegurl')) {{
-            video.src = videoSrc;
-            video.addEventListener('loadedmetadata', () => video.play());
-        }} else {{
-            status.textContent = "Browser tidak support HLS";
-        }}
-
-        function downloadVideo() {{
-            status.textContent = "Downloading... file akan tersimpan ke device kamu (tidak disimpan di server)";
-            fetch('/api/stream', {{
-                method: 'POST',
-                headers: {{ 'Content-Type': 'application/json' }},
-                body: JSON.stringify({{ url: document.referrer || prompt("Masukkan URL asli:") }})
-            }})
-            .then(r => {{
-                if (!r.ok) return r.json().then(e => {{ throw new Error(e.error) }});
-                const disposition = r.headers.get('Content-Disposition');
-                let fn = '{title}.mp4';
-                if (disposition) {{ const m = disposition.match(/filename="?([^"]+)"?/); if (m) fn = m[1]; }}
-                return r.blob().then(b => {{
-                    const a = document.createElement('a'); a.href = URL.createObjectURL(b);
-                    a.download = fn; a.click(); URL.revokeObjectURL(a.href);
-                    status.textContent = "Download selesai!";
-                }});
-            }})
-            .catch(e => status.textContent = "Error: " + e.message);
-        }}
-    </script>
-</body>
-</html>'''
-
-
-@app.route('/proxy/m3u8')
-def proxy_m3u8():
-    """Proxy m3u8 manifest — rewrites segment URLs to go through our proxy."""
-    m3u8_url = request.args.get('url', '')
-    referer = request.args.get('ref', '')
-
-    if not m3u8_url:
-        return "Missing url", 400
-
-    headers = {**HEADERS}
-    if referer:
-        headers["Referer"] = referer
-
-    try:
-        resp = requests.get(m3u8_url, headers=headers, timeout=10)
-        content = resp.text
-
-        # Rewrite relative/absolute segment URLs to go through our proxy
-        base_url = m3u8_url.rsplit('/', 1)[0] + '/'
-
-        def rewrite_url(match):
-            seg_url = match.group(1).strip()
-            if seg_url.startswith('#'):
-                return match.group(0)  # Keep HLS tags as-is
-            # Make absolute
-            if seg_url.startswith('/'):
-                from urllib.parse import urlparse
-                parsed = urlparse(m3u8_url)
-                seg_url = f"{parsed.scheme}://{parsed.netloc}{seg_url}"
-            elif not seg_url.startswith('http'):
-                seg_url = base_url + seg_url
-            return f'/proxy/segment?url={url_quote(seg_url)}&ref={url_quote(referer)}'
-
-        # Rewrite URLs in m3u8 lines
-        lines = content.split('\n')
-        new_lines = []
-        for line in lines:
-            stripped = line.strip()
-            if stripped.startswith('#'):
-                # Check for URI= in tags (e.g. #EXT-X-KEY:URI="...")
-                uri_match = re.search(r'URI="([^"]+)"', stripped)
-                if uri_match:
-                    uri = uri_match.group(1)
-                    if uri.startswith('/'):
-                        from urllib.parse import urlparse
-                        parsed = urlparse(m3u8_url)
-                        uri = f"{parsed.scheme}://{parsed.netloc}{uri}"
-                    elif not uri.startswith('http'):
-                        uri = base_url + uri
-                    proxied = f'/proxy/segment?url={url_quote(uri)}&ref={url_quote(referer)}'
-                    new_lines.append(stripped.replace(uri_match.group(0), f'URI="{proxied}"'))
-                else:
-                    new_lines.append(stripped)
-            elif stripped:
-                # This is a segment/sub-playlist URL
-                if stripped.startswith('/'):
-                    from urllib.parse import urlparse
-                    parsed = urlparse(m3u8_url)
-                    seg_url = f"{parsed.scheme}://{parsed.netloc}{stripped}"
-                elif not stripped.startswith('http'):
-                    seg_url = base_url + stripped
-                else:
-                    seg_url = stripped
-                new_lines.append(f'/proxy/segment?url={url_quote(seg_url)}&ref={url_quote(referer)}')
-            else:
-                new_lines.append(stripped)
-
-        return Response('\n'.join(new_lines), content_type='application/vnd.apple.mpegurl',
-                       headers={'Access-Control-Allow-Origin': '*'})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route('/proxy/segment')
-def proxy_segment():
-    """Proxy a single video segment or sub-playlist — streams through without saving."""
-    seg_url = request.args.get('url', '')
-    referer = request.args.get('ref', '')
-
-    if not seg_url:
-        return "Missing url", 400
-
-    headers = {**HEADERS}
-    if referer:
-        headers["Referer"] = referer
-
-    try:
-        resp = requests.get(seg_url, headers=headers, timeout=30)
-        content_type = resp.headers.get('Content-Type', 'application/octet-stream')
-
-        # If this is an m3u8 sub-playlist, rewrite it like /proxy/m3u8 does
-        if 'mpegurl' in content_type or seg_url.endswith('.m3u8') or '.m3u8?' in seg_url:
-            content = resp.text
-            base_url = seg_url.split('?')[0].rsplit('/', 1)[0] + '/'
-
-            lines = content.split('\n')
-            new_lines = []
-            for line in lines:
-                stripped = line.strip()
-                if stripped.startswith('#'):
-                    uri_match = re.search(r'URI="([^"]+)"', stripped)
-                    if uri_match:
-                        uri = uri_match.group(1)
-                        if uri.startswith('/'):
-                            from urllib.parse import urlparse
-                            parsed = urlparse(seg_url)
-                            uri = f"{parsed.scheme}://{parsed.netloc}{uri}"
-                        elif not uri.startswith('http'):
-                            uri = base_url + uri
-                        proxied = f'/proxy/segment?url={url_quote(uri)}&ref={url_quote(referer)}'
-                        new_lines.append(stripped.replace(uri_match.group(0), f'URI="{proxied}"'))
-                    else:
-                        new_lines.append(stripped)
-                elif stripped:
-                    if stripped.startswith('/'):
-                        from urllib.parse import urlparse
-                        parsed = urlparse(seg_url)
-                        s_url = f"{parsed.scheme}://{parsed.netloc}{stripped}"
-                    elif not stripped.startswith('http'):
-                        s_url = base_url + stripped
-                    else:
-                        s_url = stripped
-                    new_lines.append(f'/proxy/segment?url={url_quote(s_url)}&ref={url_quote(referer)}')
-                else:
-                    new_lines.append(stripped)
-
-            return Response('\n'.join(new_lines), content_type='application/vnd.apple.mpegurl',
-                           headers={'Access-Control-Allow-Origin': '*'})
-
-        # Regular segment — stream through
-        def generate():
-            for chunk in resp.iter_content(chunk_size=65536):
-                if chunk:
-                    yield chunk
-
-        return Response(
-            stream_with_context(generate()),
-            content_type=content_type,
-            headers={
-                'Access-Control-Allow-Origin': '*',
-                'Cache-Control': 'no-cache',
-                'X-Accel-Buffering': 'no',
-            }
-        )
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
+# ═══════════════════════════════════════════════════════════════════════════════
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=False)

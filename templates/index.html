@@ -1,223 +1,199 @@
 <!DOCTYPE html>
-<html lang="id">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Video Downloader - Vidara.to, Vidara.so, Avtub.cx, Kurakura21.com, Playmogo.com &amp; Vid30s.com</title>
+    <title>Video Downloader - Multi User</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        body { font-family: 'Inter', sans-serif; }
+        * { font-family: 'Inter', system-ui, sans-serif; }
+        body { background: #0f0f0f; min-height: 100vh; }
+        .card { background: #1a1a2e; border: 1px solid #2a2a4a; border-radius: 12px; }
+        .card-header { background: linear-gradient(135deg, #e53935, #b71c1c); border-radius: 12px 12px 0 0; padding: 16px 20px; }
+        .badge { @apply text-xs px-2.5 py-1 rounded-full bg-gray-700 text-gray-300; }
+        .badge-green { @apply text-xs px-2.5 py-1 rounded-full bg-green-800 text-green-300; }
+        .badge-yellow { @apply text-xs px-2.5 py-1 rounded-full bg-yellow-800 text-yellow-300; }
+        .badge-red { @apply text-xs px-2.5 py-1 rounded-full bg-red-800 text-red-300; }
+        .badge-blue { @apply text-xs px-2.5 py-1 rounded-full bg-blue-800 text-blue-300; }
+        .progress-bar { height: 6px; border-radius: 3px; background: #333; overflow: hidden; }
+        .progress-fill { height: 100%; border-radius: 3px; background: linear-gradient(90deg, #e53935, #ff6f00); transition: width 0.3s; }
+        input { background: #0f0f1f; border: 1px solid #333; color: #fff; }
+        input:focus { border-color: #e53935; outline: none; ring: 1px solid #e53935; }
+        .btn-primary { background: #e53935; color: #fff; padding: 10px 24px; border-radius: 8px; font-weight: 600; transition: all 0.2s; }
+        .btn-primary:hover { background: #c62828; transform: translateY(-1px); }
+        .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+        .task-item { background: #111125; border: 1px solid #222244; border-radius: 8px; padding: 12px 16px; margin-bottom: 8px; }
     </style>
 </head>
-<body class="bg-gray-900 text-white min-h-screen flex items-center justify-center p-4">
-    <div class="max-w-xl w-full bg-gray-800 rounded-2xl shadow-xl p-8 border border-gray-700">
-        <div class="text-center mb-8">
-            <h1 class="text-3xl font-bold text-red-500 mb-2">Video Downloader</h1>
-            <p class="text-gray-400">Download video kualitas terbaik, tanpa batasan ukuran!</p>
-            <div class="mt-3 flex justify-center gap-2 flex-wrap">
-                <span class="text-xs bg-gray-700 text-gray-300 px-3 py-1 rounded-full">vidara.to</span>
-                <span class="text-xs bg-gray-700 text-gray-300 px-3 py-1 rounded-full">vidara.so</span>
-                <span class="text-xs bg-gray-700 text-gray-300 px-3 py-1 rounded-full">playmogo.com</span>
-                <span class="text-xs bg-gray-700 text-gray-300 px-3 py-1 rounded-full">vid30s.com</span>
-                <span class="text-xs bg-gray-700 text-gray-300 px-3 py-1 rounded-full">avtub.cx</span>
-                <span class="text-xs bg-gray-700 text-gray-300 px-3 py-1 rounded-full">kurakura21.com</span>
+<body>
+    <div class="container mx-auto px-4 py-6 max-w-3xl">
+        <!-- Header -->
+        <div class="card mb-6">
+            <div class="card-header text-center">
+                <h1 class="text-xl font-bold text-white">⬇️ Video Downloader</h1>
+                <p class="text-red-200 text-sm mt-1">Download cepat — multi user, traffic tinggi</p>
             </div>
-        </div>
-
-        <div class="mb-6">
-            <label for="videoUrl" class="block text-sm font-medium text-gray-300 mb-2">Link Video</label>
-            <input type="text" id="videoUrl" placeholder="https://vidara.to/v/... atau https://kurakura21.com/..." 
-                   class="w-full bg-gray-900 border border-gray-600 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-red-500 focus:ring-1 focus:ring-red-500 transition-colors">
-        </div>
-
-        <button id="downloadBtn" onclick="startDownload()" 
-                class="w-full bg-red-600 hover:bg-red-700 text-white font-semibold py-3 px-4 rounded-lg transition-colors flex justify-center items-center gap-2">
-            <span>⬇️ Download ke Server</span>
-        </button>
-        <button id="streamBtn" onclick="startStream()" 
-                class="w-full mt-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-4 rounded-lg transition-colors flex justify-center items-center gap-2">
-            <span>▶️ Tonton & Download Langsung (tanpa simpan di server)</span>
-        </button>
-
-        <!-- Progress Area -->
-        <div id="progressArea" class="hidden mt-8">
-            <div class="flex justify-between text-sm text-gray-300 mb-2">
-                <span id="statusText">Mengambil video...</span>
-                <span id="percentText">0%</span>
-            </div>
-            <div class="w-full bg-gray-700 rounded-full h-3 mb-4 overflow-hidden">
-                <div id="progressBar" class="bg-red-500 h-3 rounded-full transition-all duration-300" style="width: 0%"></div>
-            </div>
-        </div>
-
-        <!-- Result Area -->
-        <div id="resultArea" class="hidden mt-8 text-center p-6 bg-gray-900 rounded-xl border border-gray-700">
-            <h3 class="text-xl font-bold text-green-400 mb-2">✅ Selesai!</h3>
-            <p class="text-sm text-gray-400 mb-6">Video berhasil didownload ke server. Klik tombol di bawah untuk menyimpannya ke devicemu. File akan terhapus otomatis dari server dalam 1 jam.</p>
-            <a id="downloadLink" href="#" 
-               class="inline-block bg-green-600 hover:bg-green-700 text-white font-semibold py-3 px-8 rounded-lg transition-colors">
-                ⬇️ Simpan Video
-            </a>
-            
-            <div class="mt-4 pt-4 border-t border-gray-700">
-                <p class="text-xs text-gray-500 mb-2">Atau download manual pakai IDM/VLC/Browser lewat direct link ini:</p>
+            <div class="p-5">
+                <div class="flex flex-wrap justify-center gap-1.5 mb-4">
+                    <span class="badge">vidara.to</span>
+                    <span class="badge">vidara.so</span>
+                    <span class="badge">playmogo.com</span>
+                    <span class="badge">vid30s.com</span>
+                    <span class="badge">avtub.cx</span>
+                    <span class="badge">kurakura21.com</span>
+                </div>
                 <div class="flex gap-2">
-                    <input type="text" id="m3u8Link" readonly class="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-xs text-gray-400">
+                    <input type="text" id="videoUrl" placeholder="Paste link video di sini..."
+                           class="flex-1 px-4 py-3 rounded-lg text-sm">
+                    <button id="submitBtn" class="btn-primary whitespace-nowrap" onclick="submitDownload()">
+                        Download
+                    </button>
                 </div>
             </div>
         </div>
-        
-        <!-- Error Area -->
-        <div id="errorArea" class="hidden mt-6 p-4 bg-red-900/30 border border-red-500/50 rounded-lg text-red-200 text-sm text-center"></div>
+
+        <!-- Status Info -->
+        <div id="statusArea" class="hidden card mb-6 p-4 text-center"></div>
+
+        <!-- Active Tasks -->
+        <div id="tasksSection" class="hidden">
+            <div class="flex items-center justify-between mb-3">
+                <h2 class="text-lg font-semibold text-white">📋 Antrian Download</h2>
+                <span id="queueInfo" class="text-xs text-gray-400"></span>
+            </div>
+            <div id="tasksList"></div>
+        </div>
     </div>
 
     <script>
-        let pollingInterval;
+        let pollInterval = null;
 
-        function showError(msg) {
-            const errorArea = document.getElementById('errorArea');
-            errorArea.innerText = msg;
-            errorArea.classList.remove('hidden');
-            document.getElementById('downloadBtn').disabled = false;
-            document.getElementById('downloadBtn').classList.remove('opacity-50', 'cursor-not-allowed');
-            document.getElementById('downloadBtn').innerHTML = '<span>Coba Lagi</span>';
-        }
+        function submitDownload() {
+            const url = document.getElementById('videoUrl').value.trim();
+            if (!url) return;
 
-        function hideError() {
-            document.getElementById('errorArea').classList.add('hidden');
-        }
-
-        async function startDownload() {
-            const urlInput = document.getElementById('videoUrl').value.trim();
-            if (!urlInput) {
-                showError("Masukkan link video terlebih dahulu!");
-                return;
-            }
-
-            hideError();
-            document.getElementById('resultArea').classList.add('hidden');
-            document.getElementById('progressArea').classList.remove('hidden');
-            
-            const btn = document.getElementById('downloadBtn');
+            const btn = document.getElementById('submitBtn');
             btn.disabled = true;
-            btn.classList.add('opacity-50', 'cursor-not-allowed');
-            btn.innerHTML = '<span>Memproses...</span>';
+            btn.innerHTML = '<span class="inline-block animate-spin mr-1">⏳</span> Memproses...';
 
-            document.getElementById('statusText').innerText = "Mengekstrak Link...";
-            document.getElementById('progressBar').style.width = "0%";
-            document.getElementById('percentText').innerText = "0%";
-
-            try {
-                const response = await fetch('/api/start_download', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ url: urlInput })
-                });
-                
-                const data = await response.json();
-                
-                if (!response.ok) {
-                    throw new Error(data.error || "Gagal memulai download");
-                }
-
-                document.getElementById('m3u8Link').value = data.m3u8_url;
-                
-                // Start polling status
-                pollStatus(data.task_id);
-
-            } catch (err) {
-                document.getElementById('progressArea').classList.add('hidden');
-                showError(err.message);
-            }
-        }
-
-        async function pollStatus(taskId) {
-            pollingInterval = setInterval(async () => {
-                try {
-                    const res = await fetch(`/api/status/${taskId}`);
-                    const data = await res.json();
-
-                    if (data.status === 'downloading') {
-                        document.getElementById('statusText').innerText = "Mendownload Video ke VPS...";
-                        document.getElementById('progressBar').style.width = `${data.progress}%`;
-                        document.getElementById('percentText').innerText = `${data.progress.toFixed(1)}`;
-                    } 
-                    else if (data.status === 'done') {
-                        clearInterval(pollingInterval);
-                        document.getElementById('progressArea').classList.add('hidden');
-                        document.getElementById('resultArea').classList.remove('hidden');
-                        document.getElementById('downloadLink').href = data.download_url;
-                        
-                        const btn = document.getElementById('downloadBtn');
-                        btn.disabled = false;
-                        btn.classList.remove('opacity-50', 'cursor-not-allowed');
-                        btn.innerHTML = '<span>⬇️ Download Video Lain</span>';
-                        document.getElementById('videoUrl').value = "";
-                    }
-                    else if (data.status === 'error') {
-                        clearInterval(pollingInterval);
-                        document.getElementById('progressArea').classList.add('hidden');
-                        showError("Gagal mendownload: " + data.error_msg);
-                    }
-                } catch (err) {
-                    console.error("Polling error", err);
-                }
-            }, 1000);
-        }
-
-        async function startStream() {
-            const urlInput = document.getElementById('videoUrl').value.trim();
-            if (!urlInput) {
-                showError("Masukkan link video terlebih dahulu!");
-                return;
-            }
-
-            hideError();
-            document.getElementById('resultArea').classList.add('hidden');
-
-            const btn = document.getElementById('streamBtn');
-            const dlBtn = document.getElementById('downloadBtn');
-            btn.disabled = true;
-            dlBtn.disabled = true;
-            btn.classList.add('opacity-50', 'cursor-not-allowed');
-            dlBtn.classList.add('opacity-50', 'cursor-not-allowed');
-            btn.innerHTML = '<span>⏳ Mengambil video...</span>';
-
-            try {
-                const response = await fetch('/api/extract', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ url: urlInput })
-                });
-
-                const data = await response.json();
-                
-                if (!response.ok) {
-                    throw new Error(data.error || "Gagal mengambil video");
-                }
-
-                // Open player page in new tab
-                window.open(data.player_url, '_blank');
-                
-                btn.innerHTML = '<span>✅ Player dibuka!</span>';
-                setTimeout(() => {
-                    btn.innerHTML = '<span>▶️ Tonton & Download Lagi</span>';
-                    btn.disabled = false;
-                    dlBtn.disabled = false;
-                    btn.classList.remove('opacity-50', 'cursor-not-allowed');
-                    dlBtn.classList.remove('opacity-50', 'cursor-not-allowed');
-                }, 2000);
-
-            } catch (err) {
-                showError(err.message);
-                btn.innerHTML = '<span>▶️ Tonton & Download Lagi</span>';
+            fetch('/api/start_download', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({url: url})
+            })
+            .then(r => r.json())
+            .then(data => {
                 btn.disabled = false;
-                dlBtn.disabled = false;
-                btn.classList.remove('opacity-50', 'cursor-not-allowed');
-                dlBtn.classList.remove('opacity-50', 'cursor-not-allowed');
-            }
+                btn.innerHTML = 'Download';
+                if (data.error) {
+                    showStatus('error', data.error);
+                    return;
+                }
+                showStatus('success',
+                    `✅ Download dimulai! Posisi antrian: #${data.queue_position}<br>` +
+                    `<small class="text-gray-400">File: ${data.filename}</small>`
+                );
+                document.getElementById('videoUrl').value = '';
+                startPolling();
+            })
+            .catch(e => {
+                btn.disabled = false;
+                btn.innerHTML = 'Download';
+                showStatus('error', 'Gagal: ' + e.message);
+            });
         }
+
+        function showStatus(type, msg) {
+            const area = document.getElementById('statusArea');
+            area.classList.remove('hidden');
+            if (type === 'error') {
+                area.innerHTML = `<div class="text-red-400 text-sm">❌ ${msg}</div>`;
+            } else {
+                area.innerHTML = `<div class="text-green-400 text-sm">${msg}</div>`;
+            }
+            setTimeout(() => { area.classList.add('hidden'); }, 8000);
+        }
+
+        function startPolling() {
+            if (pollInterval) clearInterval(pollInterval);
+            document.getElementById('tasksSection').classList.remove('hidden');
+            pollInterval = setInterval(fetchTasks, 2000);
+            fetchTasks();
+            // Auto-stop after 5 min
+            setTimeout(() => { if (pollInterval) { clearInterval(pollInterval); pollInterval = null; } }, 300000);
+        }
+
+        function fetchTasks() {
+            fetch('/api/tasks')
+            .then(r => r.json())
+            .then(data => {
+                const list = document.getElementById('tasksList');
+                const info = document.getElementById('queueInfo');
+
+                const hasActive = data.tasks.some(t => t.status === 'downloading' || t.status === 'queued');
+                if (!hasActive && pollInterval) {
+                    clearInterval(pollInterval);
+                    pollInterval = null;
+                }
+
+                info.textContent = `Max ${data.max_concurrent} download bersamaan`;
+
+                if (data.tasks.length === 0) {
+                    list.innerHTML = '<p class="text-gray-500 text-sm text-center py-4">Belum ada task</p>';
+                    return;
+                }
+
+                let html = '';
+                data.tasks.slice(0, 20).forEach(t => {
+                    const statusBadge = t.status === 'done' ? 'badge-green'
+                        : t.status === 'error' ? 'badge-red'
+                        : t.status === 'downloading' ? 'badge-blue'
+                        : 'badge-yellow';
+
+                    const statusText = t.status === 'done' ? 'Selesai'
+                        : t.status === 'error' ? 'Gagal'
+                        : t.status === 'downloading' ? `Download ${t.progress.toFixed(1)}%`
+                        : `Antrian #${t.queue_position || '?'}`;
+
+                    const progressWidth = t.status === 'done' ? 100
+                        : t.status === 'error' ? 0
+                        : t.progress || 0;
+
+                    html += `<div class="task-item">
+                        <div class="flex items-center justify-between mb-1">
+                            <span class="text-sm text-gray-200 truncate mr-2">${t.label || t.filename}</span>
+                            <span class="${statusBadge} whitespace-nowrap">${statusText}</span>
+                        </div>
+                        ${t.status !== 'error' ? `
+                        <div class="progress-bar">
+                            <div class="progress-fill" style="width: ${progressWidth}%"></div>
+                        </div>` : ''}
+                        ${t.status === 'done' ? `
+                        <div class="mt-2">
+                            <a href="${t.download_url}"
+                               class="text-green-400 text-sm hover:text-green-300 underline"
+                               onclick="showStatus('success','Download dimulai...')">
+                                📥 Download File
+                            </a>
+                        </div>` : ''}
+                        ${t.status === 'error' ? `
+                        <div class="mt-1 text-xs text-red-400">${t.error_msg || 'Error'}</div>` : ''}
+                    </div>`;
+                });
+                list.innerHTML = html;
+            })
+            .catch(() => {});
+        }
+
+        // Enter key
+        document.getElementById('videoUrl').addEventListener('keydown', e => {
+            if (e.key === 'Enter') submitDownload();
+        });
+
+        // Kick off polling if tasks exist
+        fetchTasks();
+        startPolling();
     </script>
 </body>
 </html>
