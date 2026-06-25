@@ -16,7 +16,7 @@ app.config['DOWNLOAD_FOLDER'] = os.path.join(os.path.dirname(os.path.abspath(__n
 
 os.makedirs(app.config['DOWNLOAD_FOLDER'], exist_ok=True)
 
-VIDARA_REGEX = re.compile(r'https?://(?:www\.)?vidara\.to/v/([a-zA-Z0-9_-]+)')
+VIDARA_REGEX = re.compile(r'https?://(?:www\.)?vidara\.(?:to|so)/v/([a-zA-Z0-9_-]+)')
 AVTUB_REGEX = re.compile(r'https?://(?:www\.)?avtub\.cx/(\d+)/?([^/]*)?/?')
 KURAKURA21_REGEX = re.compile(r'https?://(?:www\.)?kurakura21\.com/[^/]+/?')
 
