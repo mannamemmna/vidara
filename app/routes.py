@@ -1,4 +1,5 @@
-import os, re, time
+"""API routes: all endpoints for Vidara."""
+import os, re, time, uuid
 from functools import wraps
 from flask import Blueprint, request, jsonify, render_template, send_from_directory, url_for
 from app.config import DL_DIR, MAX_CONCURRENT
@@ -11,7 +12,7 @@ bp = Blueprint('main', __name__)
 API_KEY = os.environ.get('VIDARA_API_KEY', '')
 
 def require_api_key(f):
-    """If VIDARA_API_KEY is set, require it in header or query param."""
+    """If VIDARA_API_KEY is set, require X-API-Key header or ?api_key= param."""
     @wraps(f)
     def decorated(*args, **kwargs):
         if not API_KEY:
@@ -21,6 +22,12 @@ def require_api_key(f):
             return jsonify({'error': 'Invalid or missing API key'}), 401
         return f(*args, **kwargs)
     return decorated
+
+# ─── Helpers ──────────────────────────────────────────────────────────────────
+def _safe_filename(title, ext='mp4'):
+    """Generate safe unique filename from title."""
+    safe = re.sub(r'[^a-zA-Z0-9_-]', '_', title or 'video')[:50]
+    return f'{safe}_{uuid.uuid4().hex[:8]}.{ext}'
 
 # ─── Pages ────────────────────────────────────────────────────────────────────
 @bp.route('/')
@@ -43,11 +50,11 @@ def start_download():
         return jsonify({'error': 'Gagal mengekstrak video. Cek URL atau coba lagi.'}), 400
 
     title = result.get('title', 'video')
-    safe = re.sub(r'[^a-zA-Z0-9_-]', '_', title)[:50]
     ext = 'mp3' if audio_only else 'mp4'
-    fn = f'{safe}_{int(time.time())}.{ext}'
+    fn = _safe_filename(title, ext)
     tid, pos = qm.enqueue(
-        result['url'], fn, safe,
+        result['url'], fn, re.sub(r'[^a-zA-Z0-9_-]', '_', title)[:50],
+        original_url=url,
         title=title,
         source=result.get('source', ''),
         audio_only=audio_only,
@@ -60,7 +67,7 @@ def start_download():
         'qualities': result.get('qualities', []),
     })
 
-# ─── API: Video Info (preview before download) ───────────────────────────────
+# ─── API: Video Info (preview) ───────────────────────────────────────────────
 @bp.route('/api/info', methods=['POST'])
 @require_api_key
 def video_info():
@@ -97,21 +104,24 @@ def batch_download():
         url = url.strip()
         if not url:
             continue
-        result = resolve(url, audio_only=audio_only)
-        if result and result.get('url'):
-            title = result.get('title', 'video')
-            safe = re.sub(r'[^a-zA-Z0-9_-]', '_', title)[:50]
-            ext = 'mp3' if audio_only else 'mp4'
-            fn = f'{safe}_{int(time.time())}.{ext}'
-            tid, pos = qm.enqueue(
-                result['url'], fn, safe,
-                title=title, source=result.get('source', ''),
-                audio_only=audio_only, webhook_url=webhook_url or None,
-            )
-            results.append({'url': url, 'task_id': tid, 'queue_position': pos,
-                           'title': title, 'status': 'queued'})
-        else:
-            results.append({'url': url, 'error': 'Gagal extract'})
+        try:
+            result = resolve(url, audio_only=audio_only)
+            if result and result.get('url'):
+                title = result.get('title', 'video')
+                ext = 'mp3' if audio_only else 'mp4'
+                fn = _safe_filename(title, ext)
+                tid, pos = qm.enqueue(
+                    result['url'], fn, re.sub(r'[^a-zA-Z0-9_-]', '_', title)[:50],
+                    original_url=url,
+                    title=title, source=result.get('source', ''),
+                    audio_only=audio_only, webhook_url=webhook_url or None,
+                )
+                results.append({'url': url, 'task_id': tid, 'queue_position': pos,
+                               'title': title, 'status': 'queued'})
+            else:
+                results.append({'url': url, 'error': 'Gagal extract — URL tidak didukung'})
+        except Exception as e:
+            results.append({'url': url, 'error': str(e)})
     return jsonify({'results': results, 'total': len(results)})
 
 # ─── API: Quick (bookmarklet/extension) ──────────────────────────────────────
@@ -126,9 +136,10 @@ def quick_download():
     if not result or not result.get('url'):
         return jsonify({'error': 'Gagal extract'}), 400
     title = result.get('title', 'video')
-    safe = re.sub(r'[^a-zA-Z0-9_-]', '_', title)[:50]
-    fn = f'{safe}_{int(time.time())}.mp4'
-    tid, pos = qm.enqueue(result['url'], fn, safe, title=title, source=result.get('source', ''))
+    fn = _safe_filename(title, 'mp4')
+    tid, pos = qm.enqueue(result['url'], fn, re.sub(r'[^a-zA-Z0-9_-]', '_', title)[:50],
+                          original_url=url,
+                          title=title, source=result.get('source', ''))
     return jsonify({'task_id': tid, 'queue_position': pos, 'title': title,
                     'status_url': f'/api/status/{tid}'})
 
@@ -171,20 +182,10 @@ def supported_sites():
     sites = []
     for regex, fn in SITES:
         module = fn.__module__.split('.')[-1]
-        sites.append({
-            'name': module,
-            'pattern': regex.pattern,
-            'type': 'custom',
-        })
+        sites.append({'name': module, 'pattern': regex.pattern, 'type': 'custom'})
     for s in POPULAR_SITES:
-        sites.append({
-            'name': s['name'],
-            'domain': s['domain'],
-            'icon': s['icon'],
-            'type': 'ytdlp',
-        })
-    return jsonify({'sites': sites, 'total': len(sites),
-                    'custom': len(SITES), 'ytdlp': 1700})
+        sites.append({'name': s['name'], 'domain': s['domain'], 'icon': s['icon'], 'type': 'ytdlp'})
+    return jsonify({'sites': sites, 'total': len(sites), 'custom': len(SITES), 'ytdlp': 1700})
 
 # ─── API: Health ─────────────────────────────────────────────────────────────
 @bp.route('/api/health')

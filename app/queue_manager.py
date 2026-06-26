@@ -1,9 +1,12 @@
-import os, re, time, threading, queue, subprocess, shutil, json, urllib.request
+"""Queue manager: multi-worker download queue with speed/ETA tracking.
+Key design: re-extracts fresh streaming URL right before download (m3u8 tokens expire fast)."""
+import os, re, time, uuid, threading, queue, subprocess, shutil, json, urllib.request
 from app.config import DL_DIR, MAX_CONCURRENT, CLEANUP_MAX_AGE, CLEANUP_INTERVAL
 
-tasks = {}       # {task_id: {...}}
+# ─── State ────────────────────────────────────────────────────────────────────
+tasks = {}
 lock = threading.Lock()
-active = 0       # currently downloading count
+active = 0
 stats = {
     'total_downloads': 0,
     'total_bytes': 0,
@@ -13,7 +16,6 @@ stats = {
 
 # ─── Webhook ──────────────────────────────────────────────────────────────────
 def _send_webhook(webhook_url, task):
-    """POST task result to webhook URL."""
     if not webhook_url:
         return
     try:
@@ -56,17 +58,29 @@ def _worker():
             with lock:
                 task = tasks.get(tid, {})
                 audio_only = task.get('audio_only', False)
+                original_url = task.get('original_url', '')
 
-            cmd = ['yt-dlp', '--newline', '--no-check-certificates']
+            # ── Re-extract fresh streaming URL (m3u8 tokens expire in ~30s) ──
+            dl_url = item['dl_url']
+            if original_url:
+                try:
+                    from app.extractors import resolve
+                    fresh = resolve(original_url, audio_only=audio_only)
+                    if fresh and fresh.get('url'):
+                        dl_url = fresh['url']
+                        print(f'[worker] Re-extracted fresh URL for {tid[:8]}')
+                    else:
+                        print(f'[worker] Re-extract returned empty, using cached URL')
+                except Exception as e:
+                    print(f'[worker] Re-extract failed: {e}, using cached URL')
+
+            cmd = ['yt-dlp', '--newline', '--no-check-certificates', '--no-warnings']
             if audio_only:
                 cmd += ['-x', '--audio-format', 'mp3', '--audio-quality', '0']
-            else:
-                cmd += ['-f', 'best']
             cmd += ['-o', item['out']]
 
             # Add referer based on domain
-            dl = item['dl_url']
-            for domain, referer in [
+            referers = [
                 ('turtle4up.top', 'https://turtle4up.top/'),
                 ('morencius.com', 'https://morencius.com/'),
                 ('vidi64.com', 'https://vid30s.com/'),
@@ -74,11 +88,13 @@ def _worker():
                 ('vidaratem.co', 'https://vidara.to/'),
                 ('sprintcdn', 'https://ystream.id/'),
                 ('s1q2105.com', 'https://vidara.to/'),
-            ]:
-                if domain in dl:
+                ('es3.', 'https://vidara.to/'),
+            ]
+            for domain, referer in referers:
+                if domain in dl_url:
                     cmd += ['--referer', referer]
                     break
-            cmd.append(dl)
+            cmd.append(dl_url)
 
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                     universal_newlines=True)
@@ -106,8 +122,35 @@ def _worker():
                     except:
                         pass
             proc.wait()
-            if proc.returncode != 0 or not os.path.exists(item['out']):
-                err = 'Download gagal'
+
+            # Check success: file exists with content > 1KB
+            if os.path.exists(item['out']) and os.path.getsize(item['out']) > 1024:
+                pass  # Success
+            else:
+                # yt-dlp failed — try ffmpeg fallback for m3u8
+                if os.path.exists(item['out']):
+                    os.remove(item['out'])
+                if '.m3u8' in dl_url:
+                    try:
+                        print(f'[worker] yt-dlp failed, trying ffmpeg for {tid[:8]}')
+                        ffmpeg_cmd = ['ffmpeg', '-y', '-headers', 'Referer: https://vidara.to/\r\n',
+                                      '-i', dl_url, '-c', 'copy', '-bsf:a', 'aac_adtstoasc',
+                                      item['out']]
+                        if audio_only:
+                            ffmpeg_cmd = ['ffmpeg', '-y', '-headers', 'Referer: https://vidara.to/\r\n',
+                                          '-i', dl_url, '-vn', '-acodec', 'libmp3lame', '-q:a', '0',
+                                          item['out']]
+                        fp = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, timeout=300)
+                        if os.path.exists(item['out']) and os.path.getsize(item['out']) > 1024:
+                            pass  # ffmpeg succeeded
+                        else:
+                            err = 'Download gagal (yt-dlp + ffmpeg keduanya gagal)'
+                            if os.path.exists(item['out']):
+                                os.remove(item['out'])
+                    except Exception as e2:
+                        err = f'Download gagal: {e2}'
+                else:
+                    err = 'Download gagal (file tidak ditemukan atau kosong)'
         except Exception as e:
             err = str(e)
 
@@ -133,7 +176,6 @@ def _worker():
             else:
                 webhook_url = None
 
-        # Send webhook notification
         if webhook_url:
             with lock:
                 t = tasks.get(tid, {})
@@ -144,8 +186,10 @@ def _worker():
 
         _queue.task_done()
 
+# ─── Queue + Workers ──────────────────────────────────────────────────────────
 _queue = queue.Queue()
-threading.Thread(target=_worker, daemon=True).start()
+for _ in range(MAX_CONCURRENT):
+    threading.Thread(target=_worker, daemon=True).start()
 
 # ─── Cleanup Thread ──────────────────────────────────────────────────────────
 def _cleanup():
@@ -163,19 +207,20 @@ def _cleanup():
 threading.Thread(target=_cleanup, daemon=True).start()
 
 # ─── Public API ──────────────────────────────────────────────────────────────
-def enqueue(dl_url, filename, label, title='', source='', audio_only=False, webhook_url=None):
-    """Add download to queue. Returns task_id and queue position."""
-    import uuid
+def enqueue(dl_url, filename, label, original_url='', title='', source='', audio_only=False, webhook_url=None):
+    """Add download to queue. Returns (task_id, queue_position).
+    Stores original_url for re-extraction before download (fresh tokens)."""
     tid = str(uuid.uuid4())
+    base, ext = os.path.splitext(filename)
+    unique_fn = f'{base}_{uuid.uuid4().hex[:8]}{ext}'
     tasks[tid] = {
-        'status': 'queued', 'progress': 0, 'filename': filename,
-        'dl_url': dl_url, 'label': label, '_created': time.time(),
-        'title': title, 'source': source, 'audio_only': audio_only,
-        'webhook_url': webhook_url, 'speed': '', 'eta': '',
-        'file_size': '', 'file_size_bytes': 0,
+        'status': 'queued', 'progress': 0, 'filename': unique_fn,
+        'dl_url': dl_url, 'original_url': original_url, 'label': label,
+        '_created': time.time(), 'title': title, 'source': source,
+        'audio_only': audio_only, 'webhook_url': webhook_url,
+        'speed': '', 'eta': '', 'file_size': '', 'file_size_bytes': 0,
     }
-    _queue.put({'tid': tid, 'dl_url': dl_url, 'out': os.path.join(DL_DIR, filename)})
-    # Count queue position
+    _queue.put({'tid': tid, 'dl_url': dl_url, 'out': os.path.join(DL_DIR, unique_fn)})
     pos = 0
     with lock:
         for i, it in enumerate(list(_queue.queue)):
@@ -204,9 +249,7 @@ def get_all_tasks():
         ]
 
 def get_stats():
-    """Return global stats."""
-    disk_used = 0
-    disk_files = 0
+    disk_used = disk_files = 0
     try:
         for f in os.listdir(DL_DIR):
             fp = os.path.join(DL_DIR, f)
@@ -215,14 +258,12 @@ def get_stats():
                 disk_files += 1
     except:
         pass
-    # Disk total
     total, used, free = shutil.disk_usage(DL_DIR) if os.path.exists(DL_DIR) else (0, 0, 0)
     with lock:
-        queued = _queue.qsize()
         return {
             **stats,
             'active_downloads': active,
-            'queued': queued,
+            'queued': _queue.qsize(),
             'disk_files': disk_files,
             'disk_used_mb': round(disk_used / 1048576, 1),
             'disk_total_gb': round(total / 1073741824, 1),
