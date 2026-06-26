@@ -1,114 +1,372 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Vidara — Video Downloader</title>
+    <title>Vidara — Universal Video Downloader</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
     <style>
-        body { background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 50%, #0f172a 100%); min-height: 100vh; }
-        .glass { background: rgba(255,255,255,0.05); backdrop-filter: blur(20px); border: 1px solid rgba(255,255,255,0.1); }
+        :root { --bg: linear-gradient(135deg, #0f172a 0%, #1e1b4b 50%, #0f172a 100%); --glass: rgba(255,255,255,0.05); --border: rgba(255,255,255,0.1); --text: #fff; --muted: #9ca3af; }
+        [data-theme="light"] { --bg: linear-gradient(135deg, #f8fafc 0%, #e0e7ff 50%, #f8fafc 100%); --glass: rgba(255,255,255,0.8); --border: rgba(0,0,0,0.1); --text: #1e293b; --muted: #64748b; }
+        body { background: var(--bg); min-height: 100vh; color: var(--text); }
+        .glass { background: var(--glass); backdrop-filter: blur(20px); border: 1px solid var(--border); }
         .glow { box-shadow: 0 0 30px rgba(99,102,241,0.3); }
         .progress-fill { transition: width 0.5s ease; }
+        .fade-in { animation: fadeIn 0.3s ease; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        .site-chip { transition: all 0.2s; cursor: pointer; }
+        .site-chip:hover { transform: scale(1.05); }
+        .toast { position: fixed; bottom: 20px; right: 20px; z-index: 999; }
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-thumb { background: rgba(99,102,241,0.5); border-radius: 3px; }
+        .batch-textarea { resize: vertical; min-height: 80px; }
     </style>
 </head>
-<body class="flex items-center justify-center p-4">
+<body class="flex items-start justify-center p-4 pt-8">
 <div class="w-full max-w-2xl">
     <!-- Header -->
-    <div class="text-center mb-8">
-        <h1 class="text-5xl font-bold text-white mb-2">🎬 <span class="bg-gradient-to-r from-indigo-400 to-purple-400 bg-clip-text text-transparent">Vidara</span></h1>
-        <p class="text-gray-400">Multi-user Video Downloader — Download ke server, kirim ke kamu</p>
-        <div class="flex flex-wrap justify-center gap-2 mt-3">
-            <span class="text-xs bg-indigo-900/50 text-indigo-300 px-3 py-1 rounded-full">vidara.to</span>
-            <span class="text-xs bg-indigo-900/50 text-indigo-300 px-3 py-1 rounded-full">vidara.so</span>
-            <span class="text-xs bg-indigo-900/50 text-indigo-300 px-3 py-1 rounded-full">avtub.cx</span>
-            <span class="text-xs bg-indigo-900/50 text-indigo-300 px-3 py-1 rounded-full">kurakura21.com</span>
-            <span class="text-xs bg-indigo-900/50 text-indigo-300 px-3 py-1 rounded-full">playmogo.com</span>
-            <span class="text-xs bg-indigo-900/50 text-indigo-300 px-3 py-1 rounded-full">vid30s.com</span>
+    <div class="text-center mb-6">
+        <div class="flex justify-between items-center mb-2">
+            <div></div>
+            <h1 class="text-4xl font-bold">
+                <span class="bg-gradient-to-r from-indigo-400 to-purple-400 bg-clip-text text-transparent">🎬 Vidara</span>
+            </h1>
+            <button onclick="toggleTheme()" class="text-2xl hover:scale-110 transition-transform" title="Toggle theme">🌓</button>
+        </div>
+        <p class="text-sm" style="color:var(--muted)">Universal Video Downloader — YouTube, TikTok, Instagram, X, Reddit, Pornhub, dan 1700+ situs lainnya</p>
+        <div class="flex flex-wrap justify-center gap-2 mt-3" id="siteChips"></div>
+        <button onclick="showAllSites()" class="text-xs text-indigo-400 hover:text-indigo-300 mt-2">Lihat semua situs yang didukung →</button>
+    </div>
+
+    <!-- Tabs -->
+    <div class="flex gap-2 mb-4">
+        <button onclick="switchTab('single')" id="tabSingle" class="flex-1 py-2 rounded-xl text-sm font-medium transition-all bg-indigo-600 text-white">⬇️ Single</button>
+        <button onclick="switchTab('batch')" id="tabBatch" class="flex-1 py-2 rounded-xl text-sm font-medium transition-all glass hover:bg-white/10">📋 Batch</button>
+        <button onclick="switchTab('history')" id="tabHistory" class="flex-1 py-2 rounded-xl text-sm font-medium transition-all glass hover:bg-white/10">📜 History</button>
+    </div>
+
+    <!-- Single Download -->
+    <div id="panelSingle" class="fade-in">
+        <div class="glass rounded-2xl p-5 mb-4 glow">
+            <div class="flex gap-3">
+                <input type="text" id="videoUrl" placeholder="Paste link video di sini..."
+                       class="flex-1 bg-white/10 border border-white/20 rounded-xl px-4 py-3 placeholder-gray-500 focus:outline-none focus:border-indigo-500 text-sm"
+                       style="color:var(--text)"
+                       onkeypress="if(event.key==='Enter')startDownload()">
+                <button onclick="startDownload()" id="btnDownload"
+                        class="bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white px-5 py-3 rounded-xl font-medium transition-all whitespace-nowrap">
+                    ⬇️ Download
+                </button>
+            </div>
+            <!-- Options -->
+            <div class="flex gap-4 mt-3 text-sm" style="color:var(--muted)">
+                <label class="flex items-center gap-1 cursor-pointer">
+                    <input type="checkbox" id="optAudio" class="rounded"> 🎵 MP3 Only
+                </label>
+                <label class="flex items-center gap-1 cursor-pointer">
+                    <input type="checkbox" id="optPreview" checked class="rounded"> 👁️ Preview
+                </label>
+            </div>
+            <div id="error" class="hidden mt-3 text-red-400 text-sm bg-red-900/20 rounded-lg px-4 py-2"></div>
+        </div>
+
+        <!-- Preview Card -->
+        <div id="previewCard" class="hidden glass rounded-2xl p-5 mb-4 fade-in">
+            <div class="flex gap-4">
+                <img id="previewThumb" src="" class="w-40 h-24 object-cover rounded-lg bg-gray-800">
+                <div class="flex-1 min-w-0">
+                    <h3 id="previewTitle" class="font-medium truncate"></h3>
+                    <p id="previewSource" class="text-xs mt-1" style="color:var(--muted)"></p>
+                    <p id="previewDuration" class="text-xs mt-1" style="color:var(--muted)"></p>
+                    <!-- Quality Picker -->
+                    <div id="qualityPicker" class="mt-2">
+                        <select id="qualitySelect" class="bg-white/10 border border-white/20 rounded-lg px-3 py-1 text-sm" style="color:var(--text)">
+                            <option value="">Best Quality</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+            <button onclick="confirmDownload()" class="w-full mt-3 bg-indigo-600 hover:bg-indigo-500 text-white py-2 rounded-xl font-medium transition-all">
+                ✅ Download Sekarang
+            </button>
         </div>
     </div>
 
-    <!-- Input Card -->
-    <div class="glass rounded-2xl p-6 mb-6 glow">
-        <div class="flex gap-3">
-            <input type="text" id="videoUrl" placeholder="Tempel link video di sini..."
-                   class="flex-1 bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500 text-sm"
-                   onkeypress="if(event.key==='Enter')startDownload()">
-            <button onclick="startDownload()" id="btnDownload"
-                    class="bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white px-6 py-3 rounded-xl font-medium transition-all whitespace-nowrap">
-                ⬇️ Download
+    <!-- Batch Download -->
+    <div id="panelBatch" class="hidden fade-in">
+        <div class="glass rounded-2xl p-5 mb-4 glow">
+            <h3 class="font-medium mb-3">📋 Batch Download</h3>
+            <textarea id="batchUrls" placeholder="Paste multiple URLs (satu per baris)&#10;https://youtube.com/watch?v=...&#10;https://tiktok.com/...&#10;https://instagram.com/..."
+                      class="batch-textarea w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 placeholder-gray-500 focus:outline-none focus:border-indigo-500 text-sm"
+                      style="color:var(--text)"></textarea>
+            <div class="flex gap-3 mt-3">
+                <label class="flex items-center gap-1 text-sm cursor-pointer" style="color:var(--muted)">
+                    <input type="checkbox" id="batchAudio" class="rounded"> 🎵 MP3 Only
+                </label>
+                <span id="batchCount" class="text-sm ml-auto" style="color:var(--muted)">0 URLs</span>
+            </div>
+            <button onclick="startBatch()" id="btnBatch" class="w-full mt-3 bg-gradient-to-r from-indigo-600 to-purple-600 text-white py-3 rounded-xl font-medium transition-all">
+                🚀 Download Semua
             </button>
+            <div id="batchResults" class="hidden mt-4 space-y-2"></div>
         </div>
-        <div id="error" class="hidden mt-3 text-red-400 text-sm bg-red-900/20 rounded-lg px-4 py-2"></div>
+    </div>
+
+    <!-- History -->
+    <div id="panelHistory" class="hidden fade-in">
+        <div class="glass rounded-2xl p-5 mb-4">
+            <div class="flex justify-between items-center mb-3">
+                <h3 class="font-medium">📜 Download History</h3>
+                <button onclick="clearHistory()" class="text-xs text-red-400 hover:text-red-300">🗑️ Clear</button>
+            </div>
+            <div id="historyList" class="space-y-2 max-h-96 overflow-y-auto"></div>
+            <p id="historyEmpty" class="text-center text-sm py-8" style="color:var(--muted)">Belum ada history</p>
+        </div>
     </div>
 
     <!-- Active Task -->
-    <div id="taskCard" class="hidden glass rounded-2xl p-6 mb-6">
+    <div id="taskCard" class="hidden glass rounded-2xl p-5 mb-4 fade-in">
         <div class="flex items-center justify-between mb-3">
-            <span id="taskLabel" class="text-white font-medium"></span>
-            <span id="taskStatus" class="text-xs px-3 py-1 rounded-full"></span>
+            <span id="taskLabel" class="font-medium truncate flex-1 mr-3"></span>
+            <span id="taskStatus" class="text-xs px-3 py-1 rounded-full whitespace-nowrap"></span>
         </div>
         <div class="w-full bg-white/10 rounded-full h-3 mb-2">
             <div id="progressBar" class="progress-fill bg-gradient-to-r from-indigo-500 to-purple-500 h-3 rounded-full" style="width:0%"></div>
         </div>
-        <div class="flex justify-between text-sm text-gray-400">
+        <div class="flex justify-between text-sm" style="color:var(--muted)">
             <span id="progressText">0%</span>
-            <span id="taskInfo"></span>
+            <span id="taskSpeed"></span>
+            <span id="taskEta"></span>
+            <span id="taskSize"></span>
         </div>
-        <div id="downloadBtn" class="hidden mt-4">
-            <a id="downloadLink" href="#" class="block w-full text-center bg-green-600 hover:bg-green-500 text-white py-3 rounded-xl font-medium transition-all">
+        <div id="downloadBtn" class="hidden mt-4 flex gap-2">
+            <a id="downloadLink" href="#" class="flex-1 text-center bg-green-600 hover:bg-green-500 text-white py-3 rounded-xl font-medium transition-all">
                 ✅ Download File
             </a>
+            <button onclick="showQR()" class="bg-white/10 hover:bg-white/20 px-4 py-3 rounded-xl transition-all" title="QR Code">
+                📱
+            </button>
+            <button onclick="copyLink()" class="bg-white/10 hover:bg-white/20 px-4 py-3 rounded-xl transition-all" title="Copy Link">
+                📋
+            </button>
+        </div>
+        <!-- QR Modal -->
+        <div id="qrModal" class="hidden mt-4 text-center">
+            <canvas id="qrCanvas"></canvas>
+            <p class="text-xs mt-2" style="color:var(--muted)">Scan untuk download dari HP</p>
         </div>
     </div>
 
-    <!-- Task List -->
-    <div id="taskListCard" class="hidden glass rounded-2xl p-6 mb-6">
-        <h3 class="text-white font-medium mb-3">📋 Semua Task</h3>
+    <!-- All Tasks -->
+    <div id="taskListCard" class="hidden glass rounded-2xl p-5 mb-4">
+        <h3 class="font-medium mb-3">📋 Active Queue</h3>
         <div id="taskList" class="space-y-2 max-h-60 overflow-y-auto"></div>
     </div>
 
-    <!-- Info -->
-    <div class="text-center text-gray-500 text-xs mt-4">
-        <p>Max 3 download bersamaan • File auto-hapus setelah 1 jam</p>
-        <p class="mt-1">Video didownload ke server → dikirim ke kamu • Multi-user supported</p>
+    <!-- Stats Footer -->
+    <div class="text-center text-xs mt-6 space-y-1" style="color:var(--muted)">
+        <p>Max <span id="maxConc">10</span> download bersamaan • File auto-hapus setelah 1 jam</p>
+        <p>Video didownload ke server → dikirim ke kamu • Multi-user supported</p>
+        <p>Powered by yt-dlp • 1700+ situs didukung</p>
     </div>
 </div>
 
-<script>
-let currentTaskId = null;
-let pollInterval = null;
+<!-- Sites Modal -->
+<div id="sitesModal" class="hidden fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4" onclick="if(event.target===this)closeSitesModal()">
+    <div class="glass rounded-2xl p-6 w-full max-w-lg max-h-[80vh] overflow-y-auto">
+        <div class="flex justify-between items-center mb-4">
+            <h2 class="text-lg font-bold">🌐 Semua Situs yang Didukung</h2>
+            <button onclick="closeSitesModal()" class="text-2xl hover:text-red-400">×</button>
+        </div>
+        <p class="text-sm mb-4" style="color:var(--muted)">Custom extractors + yt-dlp (1700+ situs)</p>
+        <div id="allSitesList" class="grid grid-cols-2 gap-2"></div>
+    </div>
+</div>
 
+<!-- Toast -->
+<div id="toast" class="toast hidden glass rounded-xl px-4 py-3 text-sm"></div>
+
+<script>
+let currentTaskId = null, pollInterval = null, previewData = null;
+
+// ─── Init ────────────────────────────────────────────────────────────────────
+window.addEventListener('load', () => {
+    // Clipboard auto-paste
+    navigator.clipboard?.readText?.().then(text => {
+        if (text && text.match(/^https?:\/\//)) {
+            document.getElementById('videoUrl').value = text;
+            showToast('📋 URL dari clipboard', 2000);
+        }
+    }).catch(() => {});
+
+    // Load theme
+    if (localStorage.getItem('vidara-theme') === 'light') {
+        document.documentElement.setAttribute('data-theme', 'light');
+    }
+
+    // Load history
+    renderHistory();
+
+    // Load site chips
+    loadSiteChips();
+
+    // Batch URL counter
+    document.getElementById('batchUrls')?.addEventListener('input', e => {
+        const urls = e.target.value.split('\n').filter(u => u.trim());
+        document.getElementById('batchCount').textContent = urls.length + ' URLs';
+    });
+
+    // Keyboard shortcut
+    document.addEventListener('keydown', e => {
+        if (e.key === 'Escape') closeSitesModal();
+    });
+});
+
+// ─── Theme ───────────────────────────────────────────────────────────────────
+function toggleTheme() {
+    const html = document.documentElement;
+    const current = html.getAttribute('data-theme');
+    const next = current === 'dark' ? 'light' : 'dark';
+    html.setAttribute('data-theme', next);
+    localStorage.setItem('vidara-theme', next);
+}
+
+// ─── Tabs ────────────────────────────────────────────────────────────────────
+function switchTab(tab) {
+    ['Single', 'Batch', 'History'].forEach(t => {
+        document.getElementById('panel' + t).classList.toggle('hidden', t.toLowerCase() !== tab);
+        document.getElementById('tab' + t).className = t.toLowerCase() === tab
+            ? 'flex-1 py-2 rounded-xl text-sm font-medium transition-all bg-indigo-600 text-white'
+            : 'flex-1 py-2 rounded-xl text-sm font-medium transition-all glass hover:bg-white/10';
+    });
+}
+
+// ─── Site Chips ──────────────────────────────────────────────────────────────
+async function loadSiteChips() {
+    try {
+        const r = await fetch('/api/sites');
+        const d = await r.json();
+        const chips = document.getElementById('siteChips');
+        const popular = d.sites.filter(s => s.type === 'custom').map(s => s.name);
+        const ytdlp = ['YouTube', 'TikTok', 'Instagram', 'X/Twitter', 'Reddit', 'Pornhub'];
+        [...popular, ...ytdlp].forEach(name => {
+            const span = document.createElement('span');
+            span.className = 'site-chip text-xs bg-indigo-900/50 text-indigo-300 px-3 py-1 rounded-full';
+            span.textContent = name;
+            chips.appendChild(span);
+        });
+        document.getElementById('maxConc').textContent = '10';
+    } catch(e) {}
+}
+
+// ─── Sites Modal ─────────────────────────────────────────────────────────────
+async function showAllSites() {
+    const modal = document.getElementById('sitesModal');
+    modal.classList.remove('hidden');
+    try {
+        const r = await fetch('/api/sites');
+        const d = await r.json();
+        const list = document.getElementById('allSitesList');
+        list.innerHTML = '';
+        // Custom extractors
+        d.sites.filter(s => s.type === 'custom').forEach(s => {
+            list.innerHTML += `<div class="glass rounded-lg px-3 py-2 text-sm"><span class="text-green-400">⚡</span> ${s.name} <span class="text-xs" style="color:var(--muted)">(custom)</span></div>`;
+        });
+        // Popular ytdlp
+        d.sites.filter(s => s.type === 'ytdlp').forEach(s => {
+            list.innerHTML += `<div class="glass rounded-lg px-3 py-2 text-sm">${s.icon || '🌐'} ${s.name} <span class="text-xs" style="color:var(--muted)">${s.domain}</span></div>`;
+        });
+        // Total
+        list.innerHTML += `<div class="col-span-2 text-center py-2 text-sm" style="color:var(--muted)">+ ${d.ytdlp} situs lainnya via yt-dlp</div>`;
+    } catch(e) {
+        document.getElementById('allSitesList').innerHTML = '<div class="col-span-2 text-center text-red-400">Gagal load</div>';
+    }
+}
+function closeSitesModal() { document.getElementById('sitesModal').classList.add('hidden'); }
+
+// ─── Single Download ─────────────────────────────────────────────────────────
 async function startDownload() {
     const url = document.getElementById('videoUrl').value.trim();
     if (!url) return showError('Masukkan URL video terlebih dahulu');
+    hideError();
+
+    // Preview mode
+    if (document.getElementById('optPreview').checked && !previewData) {
+        const btn = document.getElementById('btnDownload');
+        btn.disabled = true; btn.innerHTML = '🔍 Menganalisis...';
+        try {
+            const r = await fetch('/api/info', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({url})
+            });
+            const d = await r.json();
+            if (r.ok && d.title) {
+                showPreview(d);
+                btn.disabled = false; btn.innerHTML = '⬇️ Download';
+                return;
+            }
+        } catch(e) {}
+        btn.disabled = false; btn.innerHTML = '⬇️ Download';
+    }
+
+    doDownload(url, document.getElementById('optAudio').checked);
+}
+
+function showPreview(data) {
+    previewData = data;
+    document.getElementById('previewCard').classList.remove('hidden');
+    document.getElementById('previewTitle').textContent = data.title || 'Unknown';
+    document.getElementById('previewSource').textContent = 'Source: ' + (data.source || 'unknown');
+    document.getElementById('previewDuration').textContent = data.duration ? 'Durasi: ' + formatDuration(data.duration) : '';
+    if (data.thumbnail) document.getElementById('previewThumb').src = data.thumbnail;
+
+    const sel = document.getElementById('qualitySelect');
+    sel.innerHTML = '<option value="">Best Quality</option>';
+    (data.qualities || []).forEach(q => {
+        sel.innerHTML += `<option value="${q.url}">${q.label}${q.filesize ? ' ('+formatBytes(q.filesize)+')' : ''}</option>`;
+    });
+}
+
+function confirmDownload() {
+    const url = document.getElementById('videoUrl').value.trim();
+    const audioOnly = document.getElementById('optAudio').checked;
+    doDownload(url, audioOnly);
+    previewData = null;
+    document.getElementById('previewCard').classList.add('hidden');
+}
+
+async function doDownload(url, audioOnly) {
     const btn = document.getElementById('btnDownload');
-    btn.disabled = true;
-    btn.innerHTML = '⏳ Memproses...';
+    btn.disabled = true; btn.innerHTML = '⏳ Memproses...';
     hideError();
     try {
         const r = await fetch('/api/start_download', {
             method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({url})
+            body: JSON.stringify({url, audio_only: audioOnly})
         });
         const d = await r.json();
-        if (!r.ok) throw new Error(d.error || 'Gagal memulai download');
+        if (!r.ok) throw new Error(d.error || 'Gagal');
         currentTaskId = d.task_id;
-        showTask(d.filename, d.queue_position);
+        showTask(d);
         startPolling();
-    } catch (e) {
+        addToHistory({task_id: d.task_id, title: d.title || d.filename, source: d.source, url, time: Date.now()});
+    } catch(e) {
         showError(e.message);
     } finally {
-        btn.disabled = false;
-        btn.innerHTML = '⬇️ Download';
+        btn.disabled = false; btn.innerHTML = '⬇️ Download';
     }
 }
 
-function showTask(filename, qpos) {
+function showTask(d) {
     document.getElementById('taskCard').classList.remove('hidden');
-    document.getElementById('taskLabel').textContent = filename.replace(/_\d+\.mp4$/, '');
-    updateStatus('queued', 0, qpos ? `Antrian #${qpos}` : '');
+    document.getElementById('taskLabel').textContent = d.title || d.filename;
+    document.getElementById('qrModal').classList.add('hidden');
+    updateStatus('queued', 0, d.queue_position ? `Antrian #${d.queue_position}` : '');
     document.getElementById('downloadBtn').classList.add('hidden');
+    document.getElementById('taskSpeed').textContent = '';
+    document.getElementById('taskEta').textContent = '';
+    document.getElementById('taskSize').textContent = '';
 }
 
 function updateStatus(status, progress, info) {
@@ -124,7 +382,6 @@ function updateStatus(status, progress, info) {
     el.className = 'text-xs px-3 py-1 rounded-full ' + cls;
     document.getElementById('progressBar').style.width = progress + '%';
     document.getElementById('progressText').textContent = progress.toFixed(1) + '%';
-    if (info) document.getElementById('taskInfo').textContent = info;
 }
 
 function startPolling() {
@@ -134,27 +391,145 @@ function startPolling() {
         try {
             const r = await fetch(`/api/status/${currentTaskId}`);
             const d = await r.json();
+            if (d.speed) document.getElementById('taskSpeed').textContent = '⚡ ' + d.speed;
+            if (d.eta) document.getElementById('taskEta').textContent = '⏱ ' + d.eta;
+            if (d.file_size) document.getElementById('taskSize').textContent = '📦 ' + d.file_size;
             if (d.status === 'done') {
                 clearInterval(pollInterval);
                 updateStatus('done', 100, '');
                 document.getElementById('downloadBtn').classList.remove('hidden');
                 document.getElementById('downloadLink').href = d.download_url;
+                showToast('✅ Download selesai!');
             } else if (d.status === 'error') {
                 clearInterval(pollInterval);
                 updateStatus('error', 0, d.error_msg || '');
             } else {
-                updateStatus(d.status, d.progress || 0, d.status === 'downloading' ? '' : '');
+                updateStatus(d.status, d.progress || 0, '');
             }
-        } catch (e) {}
+        } catch(e) {}
     }, 2000);
 }
 
+// ─── Batch Download ──────────────────────────────────────────────────────────
+async function startBatch() {
+    const text = document.getElementById('batchUrls').value.trim();
+    if (!text) return;
+    const urls = text.split('\n').map(u => u.trim()).filter(u => u);
+    if (urls.length === 0) return;
+    if (urls.length > 20) return showToast('❌ Maksimal 20 URL', 3000);
+
+    const btn = document.getElementById('btnBatch');
+    btn.disabled = true; btn.innerHTML = '⏳ Memproses...';
+    try {
+        const r = await fetch('/api/batch', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({urls, audio_only: document.getElementById('batchAudio').checked})
+        });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || 'Gagal');
+
+        const container = document.getElementById('batchResults');
+        container.classList.remove('hidden');
+        container.innerHTML = '';
+        d.results.forEach(item => {
+            const div = document.createElement('div');
+            if (item.error) {
+                div.className = 'glass rounded-lg px-4 py-2 text-sm text-red-400';
+                div.textContent = `❌ ${item.url}: ${item.error}`;
+            } else {
+                div.className = 'glass rounded-lg px-4 py-2 text-sm text-green-400';
+                div.innerHTML = `✅ <b>${item.title || item.url}</b> — Task: ${item.task_id.substring(0,8)}...`;
+                addToHistory({task_id: item.task_id, title: item.title, url: item.url, time: Date.now()});
+            }
+            container.appendChild(div);
+        });
+        showToast(`📋 ${d.results.filter(r=>r.task_id).length} download dimulai`);
+    } catch(e) {
+        showToast('❌ ' + e.message, 3000);
+    } finally {
+        btn.disabled = false; btn.innerHTML = '🚀 Download Semua';
+    }
+}
+
+// ─── History ─────────────────────────────────────────────────────────────────
+function getHistory() {
+    return JSON.parse(localStorage.getItem('vidara-history') || '[]');
+}
+function addToHistory(item) {
+    const hist = getHistory();
+    hist.unshift(item);
+    if (hist.length > 20) hist.pop();
+    localStorage.setItem('vidara-history', JSON.stringify(hist));
+    renderHistory();
+}
+function renderHistory() {
+    const hist = getHistory();
+    const list = document.getElementById('historyList');
+    const empty = document.getElementById('historyEmpty');
+    if (hist.length === 0) { list.innerHTML = ''; empty.classList.remove('hidden'); return; }
+    empty.classList.add('hidden');
+    list.innerHTML = hist.map(h => `
+        <div class="glass rounded-lg px-4 py-3 flex justify-between items-center">
+            <div class="min-w-0 flex-1">
+                <p class="text-sm font-medium truncate">${h.title || h.url || 'Unknown'}</p>
+                <p class="text-xs" style="color:var(--muted)">${h.source || ''} • ${new Date(h.time).toLocaleString('id-ID')}</p>
+            </div>
+            <button onclick="checkHistory('${h.task_id}')" class="text-xs bg-indigo-600 text-white px-3 py-1 rounded-lg ml-2">Cek</button>
+        </div>
+    `).join('');
+}
+function checkHistory(tid) {
+    currentTaskId = tid;
+    switchTab('single');
+    document.getElementById('taskCard').classList.remove('hidden');
+    startPolling();
+}
+function clearHistory() {
+    localStorage.removeItem('vidara-history');
+    renderHistory();
+}
+
+// ─── QR Code ─────────────────────────────────────────────────────────────────
+function showQR() {
+    const link = document.getElementById('downloadLink').href;
+    const modal = document.getElementById('qrModal');
+    modal.classList.toggle('hidden');
+    if (!modal.classList.contains('hidden')) {
+        QRCode.toCanvas(document.getElementById('qrCanvas'), link, {width: 160, margin: 2});
+    }
+}
+
+// ─── Copy Link ───────────────────────────────────────────────────────────────
+function copyLink() {
+    const link = document.getElementById('downloadLink').href;
+    navigator.clipboard.writeText(link).then(() => showToast('📋 Link copied!'));
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+function formatDuration(s) {
+    const m = Math.floor(s / 60);
+    const sec = s % 60;
+    return m > 0 ? `${m}m ${sec}s` : `${sec}s`;
+}
+function formatBytes(bytes) {
+    if (!bytes) return '';
+    const units = ['B', 'KB', 'MB', 'GB'];
+    let i = 0;
+    while (bytes >= 1024 && i < units.length - 1) { bytes /= 1024; i++; }
+    return bytes.toFixed(1) + ' ' + units[i];
+}
 function showError(msg) {
     const el = document.getElementById('error');
     el.textContent = '❌ ' + msg;
     el.classList.remove('hidden');
 }
 function hideError() { document.getElementById('error').classList.add('hidden'); }
+function showToast(msg, ms = 3000) {
+    const el = document.getElementById('toast');
+    el.textContent = msg;
+    el.classList.remove('hidden');
+    setTimeout(() => el.classList.add('hidden'), ms);
+}
 </script>
 </body>
 </html>

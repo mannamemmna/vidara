@@ -11,7 +11,14 @@ def extract(url, m):
                           json={'filecode': fc, 'device': 'web'},
                           headers=HEADERS, timeout=10)
         d = r.json()
-        return d.get('streaming_url'), f'vidara_{fc}'
+        if d.get('error'):
+            return None
+        return {
+            'url': d.get('streaming_url'),
+            'title': d.get('title', f'vidara_{fc}'),
+            'thumbnail': d.get('thumbnail', ''),
+            'qualities': [{'label': 'Best', 'url': d.get('streaming_url')}],
+        }
     except Exception as e:
         print(f"[vidara] {e}")
-        return None, f'vidara_{fc}'
+        return None

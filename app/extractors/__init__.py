@@ -5,80 +5,82 @@ SITES = []
 
 def site(regex):
     """Decorator: register extractor function with URL regex."""
-    def wrap(fn):
-        SITES.append((re.compile(regex), fn))
+    def wrapper(fn):
+        SITES.append((re.compile(regex, re.I), fn))
         return fn
-    return wrap
+    return wrapper
 
 # ─── Shared Helpers ───────────────────────────────────────────────────────────
+
 def _m3u8(html, embed_url=""):
-    """Extract m3u8 URL from HTML: direct link > file attr > JS eval deobfuscation."""
+    """Extract m3u8 URL from HTML."""
     direct = re.findall(r'https?://[^\s"\'<>]+\.m3u8[^\s"\'<>]*', html)
     if direct:
         return direct[0]
     fa = re.search(r'"file"\s*:\s*"([^"]*\.m3u8[^"]*)"', html)
     if fa:
         return fa.group(1)
+    packed = _packed(html)
+    if not packed:
+        return None
     try:
-        idx = html.find('eval(function(p,a,c,k,e,d)')
-        if idx < 0:
-            return None
-        depth, start = 0, idx + 4
-        for i in range(start, len(html)):
-            if html[i] == '(':
-                depth += 1
-            elif html[i] == ')':
-                depth -= 1
-                if depth == 0:
-                    packed = html[start:i + 1]
-                    break
-        else:
-            return None
-        proc = subprocess.Popen(
-            ['node', '-e',
-             'process.stdin.on("data",d=>{var r=eval("("+d+")");process.stdout.write(r);})'],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        out, _ = proc.communicate(input=packed, timeout=15)
-        if not out:
-            return None
-        lm = re.search(r'links\s*=\s*(\{[^}]*"hls\d?"[^}]*\})', out)
-        if lm:
-            try:
-                links = json.loads(lm.group(1))
-                for k in ('hls4', 'hls3', 'hls2'):
-                    if links.get(k):
-                        return links[k]
-            except:
-                pass
-        mm = re.findall(r"""['"]((?:https?://|/)[^\s'"<>]*master\.m3u8[^\s'"<>]*)['"]""", out)
-        if mm:
-            return mm[0]
-    except:
-        pass
+        r = subprocess.run(['node', '-e', 'process.stdout.write(require("child_process").execSync("node -e "+process.argv[1]).toString())', packed],
+            capture_output=True, text=True, timeout=15)
+        urls = re.findall(r'https?://[^\s"\'<>]+\.m3u8[^\s"\'<>]*', r.stdout)
+        return urls[0] if urls else None
+    except Exception:
+        return None
+
+def _packed(html):
+    """Extract packed JS from eval(function(p,a,c,k,e,d)) blocks."""
+    for m in re.finditer(r'eval\(function\(p,a,c,k,e,d\)\{.+?\}\((.+?)\)\)', html, re.S):
+        parts = m.group(1)
+        qm = re.match(r"'(.+?)'\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*'(.+?)'", parts, re.S)
+        if qm:
+            return parts
     return None
 
 def _abs(url, base):
-    """Convert relative URL to absolute using base URL."""
+    """Make URL absolute."""
     if not url:
-        return url
+        return None
     if url.startswith('//'):
         return 'https:' + url
     if url.startswith('/'):
-        m = re.match(r'(https?://[^/]+)', base)
-        return (m.group(1) if m else '') + url
+        from urllib.parse import urlparse
+        p = urlparse(base)
+        return f'{p.scheme}://{p.netloc}{url}'
     return url
 
-# ─── Import extractors AFTER defining site() to avoid circular import ────────
-from app.extractors import vidara, avtub, kurakura21, playmogo, vid30s  # noqa: E402, F401
+# ─── Resolve Function ─────────────────────────────────────────────────────────
 
-def resolve(url):
-    """Match URL against all registered sites -> (video_url, label)."""
+def resolve(url, audio_only=False):
+    """
+    Match URL to site extractor.
+    Returns dict: {url, title, thumbnail, qualities, duration, source, audio_only}
+    or None if no match / extraction failed.
+    """
     for regex, fn in SITES:
         m = regex.search(url)
         if m:
             try:
-                return fn(url, m)
+                result = fn(url, m)
             except Exception as e:
-                print(f"[extractor:{fn.__name__}] {e}")
-                return None, f"error_{fn.__name__}"
-    return None, None
+                print(f'[extractor] {fn.__module__} error: {e}')
+                result = None
+            if result and result.get('url'):
+                result.setdefault('source', fn.__module__.split('.')[-1])
+                result.setdefault('title', result['source'])
+                result['audio_only'] = audio_only
+                return result
+            return None
+    # ─── Fallback: yt-dlp (supports 1700+ sites) ─────────────────────────
+    from app.extractors.generic import extract_generic
+    result = extract_generic(url)
+    if result and result.get('url'):
+        result['audio_only'] = audio_only
+        return result
+    return None
+
+# ─── Import Extractors (triggers @site registration) ──────────────────────────
+from app.extractors import vidara, avtub, kurakura21, playmogo, vid30s
