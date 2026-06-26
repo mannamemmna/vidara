@@ -1,59 +1,57 @@
-# Video Downloader (Vidara.to, Avtub.cx & Kurakura21.com)
+# Vidara — Multi-User Video Downloader
 
-Web-based video downloader that supports multiple sites. Bypasses the Telegram 50MB upload limit by downloading videos to a VPS and serving them via HTTP.
+Download video dari berbagai situs. Multi-user queue, auto-cleanup.
 
 ## Supported Sites
 
-| Site | URL Format | Status |
-|------|-----------|--------|
-| vidara.to | `https://vidara.to/v/{id}` | ✅ Working |
-| avtub.cx | `https://avtub.cx/{id}/{slug}/` | ✅ Working |
-| kurakura21.com | `https://kurakura21.com/{slug}/` | ✅ Working |
+| Site | Method |
+|------|--------|
+| vidara.to / vidara.so | vidaratem.co API |
+| avtub.cx | morencius.com embed → JS deobfuscation → HLS |
+| kurakura21.com | WP AJAX → turtle4up.top AES-CBC decrypt |
+| playmogo.com | DoodStream pass_md5 → CDN |
+| vid30s.com | DoodStream embed.php → direct MP4 |
 
-## Features
+## Architecture
 
-- Download videos in best available quality (up to 1080p)
-- Live progress bar (0-100%) during download
-- No file size limits (bypasses Telegram 50MB bot API limit)
-- Auto-cleanup: files older than 1 hour are deleted automatically
-- Dark UI with Tailwind CSS
-- AES-CBC decryption for turtle4up.top embeds (kurakura21.com)
+```
+main.py                     # Entry point (gunicorn main:app)
+app/
+├── __init__.py             # create_app() factory
+├── config.py               # Constants, AES keys, headers
+├── routes.py               # Flask Blueprint routes
+├── queue_manager.py        # Multi-user download queue + worker
+└── extractors/
+    ├── __init__.py          # @site registry + resolve() + helpers
+    ├── vidara.py            # vidara.to / vidara.so
+    ├── avtub.py             # avtub.cx
+    ├── kurakura21.py        # kurakura21.com
+    ├── playmogo.py          # playmogo.com
+    └── vid30s.py            # vid30s.com
+templates/index.html         # Frontend UI
+```
 
-## Quick Start
+## API
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/` | GET | Web UI |
+| `/api/start_download` | POST | Start download `{"url":"..."}` |
+| `/api/status/<task_id>` | GET | Check task progress |
+| `/api/tasks` | GET | List all tasks |
+| `/api/health` | GET | Health check |
+| `/downloads/<filename>` | GET | Download file |
+
+## Run
 
 ```bash
-# Install dependencies
 pip install -r requirements.txt
-
-# Run in development
-python main.py
-
-# Run in production
-gunicorn -w 4 -b 0.0.0.0:5000 main:app
+gunicorn main:app --bind 0.0.0.0:5000 --workers 1 --threads 4
 ```
 
-## How It Works
+## Deploy (Railway)
 
-1. User pastes a video URL (vidara.to, avtub.cx, or kurakura21.com)
-2. Backend extracts the direct m3u8/mp4 streaming URL
-3. `yt-dlp` downloads the video to the VPS (`downloads/` folder)
-4. User downloads the file via browser
-5. File auto-deletes after 1 hour
-
-## Deployment
-
-This project is designed for platforms like Railway, Render, or any VPS with Python:
-
-```
-web: gunicorn main:app
-```
-
-## Environment
-
-- Python 3.10+
-- `yt-dlp` (for video downloading)
-- `node` (required for avtub.cx JS deobfuscation)
-
-## License
-
-MIT
+Auto-deploy from GitHub. Needs:
+- `Procfile` — startup command
+- `nixpacks.toml` — install Node.js + yt-dlp
+- `requirements.txt` — Python deps

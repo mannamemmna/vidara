@@ -3,197 +3,158 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Video Downloader - Multi User</title>
+    <title>Vidara — Video Downloader</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        * { font-family: 'Inter', system-ui, sans-serif; }
-        body { background: #0f0f0f; min-height: 100vh; }
-        .card { background: #1a1a2e; border: 1px solid #2a2a4a; border-radius: 12px; }
-        .card-header { background: linear-gradient(135deg, #e53935, #b71c1c); border-radius: 12px 12px 0 0; padding: 16px 20px; }
-        .badge { @apply text-xs px-2.5 py-1 rounded-full bg-gray-700 text-gray-300; }
-        .badge-green { @apply text-xs px-2.5 py-1 rounded-full bg-green-800 text-green-300; }
-        .badge-yellow { @apply text-xs px-2.5 py-1 rounded-full bg-yellow-800 text-yellow-300; }
-        .badge-red { @apply text-xs px-2.5 py-1 rounded-full bg-red-800 text-red-300; }
-        .badge-blue { @apply text-xs px-2.5 py-1 rounded-full bg-blue-800 text-blue-300; }
-        .progress-bar { height: 6px; border-radius: 3px; background: #333; overflow: hidden; }
-        .progress-fill { height: 100%; border-radius: 3px; background: linear-gradient(90deg, #e53935, #ff6f00); transition: width 0.3s; }
-        input { background: #0f0f1f; border: 1px solid #333; color: #fff; }
-        input:focus { border-color: #e53935; outline: none; ring: 1px solid #e53935; }
-        .btn-primary { background: #e53935; color: #fff; padding: 10px 24px; border-radius: 8px; font-weight: 600; transition: all 0.2s; }
-        .btn-primary:hover { background: #c62828; transform: translateY(-1px); }
-        .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
-        .task-item { background: #111125; border: 1px solid #222244; border-radius: 8px; padding: 12px 16px; margin-bottom: 8px; }
+        body { background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 50%, #0f172a 100%); min-height: 100vh; }
+        .glass { background: rgba(255,255,255,0.05); backdrop-filter: blur(20px); border: 1px solid rgba(255,255,255,0.1); }
+        .glow { box-shadow: 0 0 30px rgba(99,102,241,0.3); }
+        .progress-fill { transition: width 0.5s ease; }
     </style>
 </head>
-<body>
-    <div class="container mx-auto px-4 py-6 max-w-3xl">
-        <!-- Header -->
-        <div class="card mb-6">
-            <div class="card-header text-center">
-                <h1 class="text-xl font-bold text-white">⬇️ Video Downloader</h1>
-                <p class="text-red-200 text-sm mt-1">Download cepat — multi user, traffic tinggi</p>
-            </div>
-            <div class="p-5">
-                <div class="flex flex-wrap justify-center gap-1.5 mb-4">
-                    <span class="badge">vidara.to</span>
-                    <span class="badge">vidara.so</span>
-                    <span class="badge">playmogo.com</span>
-                    <span class="badge">vid30s.com</span>
-                    <span class="badge">avtub.cx</span>
-                    <span class="badge">kurakura21.com</span>
-                </div>
-                <div class="flex gap-2">
-                    <input type="text" id="videoUrl" placeholder="Paste link video di sini..."
-                           class="flex-1 px-4 py-3 rounded-lg text-sm">
-                    <button id="submitBtn" class="btn-primary whitespace-nowrap" onclick="submitDownload()">
-                        Download
-                    </button>
-                </div>
-            </div>
-        </div>
-
-        <!-- Status Info -->
-        <div id="statusArea" class="hidden card mb-6 p-4 text-center"></div>
-
-        <!-- Active Tasks -->
-        <div id="tasksSection" class="hidden">
-            <div class="flex items-center justify-between mb-3">
-                <h2 class="text-lg font-semibold text-white">📋 Antrian Download</h2>
-                <span id="queueInfo" class="text-xs text-gray-400"></span>
-            </div>
-            <div id="tasksList"></div>
+<body class="flex items-center justify-center p-4">
+<div class="w-full max-w-2xl">
+    <!-- Header -->
+    <div class="text-center mb-8">
+        <h1 class="text-5xl font-bold text-white mb-2">🎬 <span class="bg-gradient-to-r from-indigo-400 to-purple-400 bg-clip-text text-transparent">Vidara</span></h1>
+        <p class="text-gray-400">Multi-user Video Downloader — Download ke server, kirim ke kamu</p>
+        <div class="flex flex-wrap justify-center gap-2 mt-3">
+            <span class="text-xs bg-indigo-900/50 text-indigo-300 px-3 py-1 rounded-full">vidara.to</span>
+            <span class="text-xs bg-indigo-900/50 text-indigo-300 px-3 py-1 rounded-full">vidara.so</span>
+            <span class="text-xs bg-indigo-900/50 text-indigo-300 px-3 py-1 rounded-full">avtub.cx</span>
+            <span class="text-xs bg-indigo-900/50 text-indigo-300 px-3 py-1 rounded-full">kurakura21.com</span>
+            <span class="text-xs bg-indigo-900/50 text-indigo-300 px-3 py-1 rounded-full">playmogo.com</span>
+            <span class="text-xs bg-indigo-900/50 text-indigo-300 px-3 py-1 rounded-full">vid30s.com</span>
         </div>
     </div>
 
-    <script>
-        let pollInterval = null;
+    <!-- Input Card -->
+    <div class="glass rounded-2xl p-6 mb-6 glow">
+        <div class="flex gap-3">
+            <input type="text" id="videoUrl" placeholder="Tempel link video di sini..."
+                   class="flex-1 bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500 text-sm"
+                   onkeypress="if(event.key==='Enter')startDownload()">
+            <button onclick="startDownload()" id="btnDownload"
+                    class="bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white px-6 py-3 rounded-xl font-medium transition-all whitespace-nowrap">
+                ⬇️ Download
+            </button>
+        </div>
+        <div id="error" class="hidden mt-3 text-red-400 text-sm bg-red-900/20 rounded-lg px-4 py-2"></div>
+    </div>
 
-        function submitDownload() {
-            const url = document.getElementById('videoUrl').value.trim();
-            if (!url) return;
+    <!-- Active Task -->
+    <div id="taskCard" class="hidden glass rounded-2xl p-6 mb-6">
+        <div class="flex items-center justify-between mb-3">
+            <span id="taskLabel" class="text-white font-medium"></span>
+            <span id="taskStatus" class="text-xs px-3 py-1 rounded-full"></span>
+        </div>
+        <div class="w-full bg-white/10 rounded-full h-3 mb-2">
+            <div id="progressBar" class="progress-fill bg-gradient-to-r from-indigo-500 to-purple-500 h-3 rounded-full" style="width:0%"></div>
+        </div>
+        <div class="flex justify-between text-sm text-gray-400">
+            <span id="progressText">0%</span>
+            <span id="taskInfo"></span>
+        </div>
+        <div id="downloadBtn" class="hidden mt-4">
+            <a id="downloadLink" href="#" class="block w-full text-center bg-green-600 hover:bg-green-500 text-white py-3 rounded-xl font-medium transition-all">
+                ✅ Download File
+            </a>
+        </div>
+    </div>
 
-            const btn = document.getElementById('submitBtn');
-            btn.disabled = true;
-            btn.innerHTML = '<span class="inline-block animate-spin mr-1">⏳</span> Memproses...';
+    <!-- Task List -->
+    <div id="taskListCard" class="hidden glass rounded-2xl p-6 mb-6">
+        <h3 class="text-white font-medium mb-3">📋 Semua Task</h3>
+        <div id="taskList" class="space-y-2 max-h-60 overflow-y-auto"></div>
+    </div>
 
-            fetch('/api/start_download', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({url: url})
-            })
-            .then(r => r.json())
-            .then(data => {
-                btn.disabled = false;
-                btn.innerHTML = 'Download';
-                if (data.error) {
-                    showStatus('error', data.error);
-                    return;
-                }
-                showStatus('success',
-                    `✅ Download dimulai! Posisi antrian: #${data.queue_position}<br>` +
-                    `<small class="text-gray-400">File: ${data.filename}</small>`
-                );
-                document.getElementById('videoUrl').value = '';
-                startPolling();
-            })
-            .catch(e => {
-                btn.disabled = false;
-                btn.innerHTML = 'Download';
-                showStatus('error', 'Gagal: ' + e.message);
-            });
-        }
+    <!-- Info -->
+    <div class="text-center text-gray-500 text-xs mt-4">
+        <p>Max 3 download bersamaan • File auto-hapus setelah 1 jam</p>
+        <p class="mt-1">Video didownload ke server → dikirim ke kamu • Multi-user supported</p>
+    </div>
+</div>
 
-        function showStatus(type, msg) {
-            const area = document.getElementById('statusArea');
-            area.classList.remove('hidden');
-            if (type === 'error') {
-                area.innerHTML = `<div class="text-red-400 text-sm">❌ ${msg}</div>`;
-            } else {
-                area.innerHTML = `<div class="text-green-400 text-sm">${msg}</div>`;
-            }
-            setTimeout(() => { area.classList.add('hidden'); }, 8000);
-        }
+<script>
+let currentTaskId = null;
+let pollInterval = null;
 
-        function startPolling() {
-            if (pollInterval) clearInterval(pollInterval);
-            document.getElementById('tasksSection').classList.remove('hidden');
-            pollInterval = setInterval(fetchTasks, 2000);
-            fetchTasks();
-            // Auto-stop after 5 min
-            setTimeout(() => { if (pollInterval) { clearInterval(pollInterval); pollInterval = null; } }, 300000);
-        }
-
-        function fetchTasks() {
-            fetch('/api/tasks')
-            .then(r => r.json())
-            .then(data => {
-                const list = document.getElementById('tasksList');
-                const info = document.getElementById('queueInfo');
-
-                const hasActive = data.tasks.some(t => t.status === 'downloading' || t.status === 'queued');
-                if (!hasActive && pollInterval) {
-                    clearInterval(pollInterval);
-                    pollInterval = null;
-                }
-
-                info.textContent = `Max ${data.max_concurrent} download bersamaan`;
-
-                if (data.tasks.length === 0) {
-                    list.innerHTML = '<p class="text-gray-500 text-sm text-center py-4">Belum ada task</p>';
-                    return;
-                }
-
-                let html = '';
-                data.tasks.slice(0, 20).forEach(t => {
-                    const statusBadge = t.status === 'done' ? 'badge-green'
-                        : t.status === 'error' ? 'badge-red'
-                        : t.status === 'downloading' ? 'badge-blue'
-                        : 'badge-yellow';
-
-                    const statusText = t.status === 'done' ? 'Selesai'
-                        : t.status === 'error' ? 'Gagal'
-                        : t.status === 'downloading' ? `Download ${t.progress.toFixed(1)}%`
-                        : `Antrian #${t.queue_position || '?'}`;
-
-                    const progressWidth = t.status === 'done' ? 100
-                        : t.status === 'error' ? 0
-                        : t.progress || 0;
-
-                    html += `<div class="task-item">
-                        <div class="flex items-center justify-between mb-1">
-                            <span class="text-sm text-gray-200 truncate mr-2">${t.label || t.filename}</span>
-                            <span class="${statusBadge} whitespace-nowrap">${statusText}</span>
-                        </div>
-                        ${t.status !== 'error' ? `
-                        <div class="progress-bar">
-                            <div class="progress-fill" style="width: ${progressWidth}%"></div>
-                        </div>` : ''}
-                        ${t.status === 'done' ? `
-                        <div class="mt-2">
-                            <a href="${t.download_url}"
-                               class="text-green-400 text-sm hover:text-green-300 underline"
-                               onclick="showStatus('success','Download dimulai...')">
-                                📥 Download File
-                            </a>
-                        </div>` : ''}
-                        ${t.status === 'error' ? `
-                        <div class="mt-1 text-xs text-red-400">${t.error_msg || 'Error'}</div>` : ''}
-                    </div>`;
-                });
-                list.innerHTML = html;
-            })
-            .catch(() => {});
-        }
-
-        // Enter key
-        document.getElementById('videoUrl').addEventListener('keydown', e => {
-            if (e.key === 'Enter') submitDownload();
+async function startDownload() {
+    const url = document.getElementById('videoUrl').value.trim();
+    if (!url) return showError('Masukkan URL video terlebih dahulu');
+    const btn = document.getElementById('btnDownload');
+    btn.disabled = true;
+    btn.innerHTML = '⏳ Memproses...';
+    hideError();
+    try {
+        const r = await fetch('/api/start_download', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({url})
         });
-
-        // Kick off polling if tasks exist
-        fetchTasks();
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || 'Gagal memulai download');
+        currentTaskId = d.task_id;
+        showTask(d.filename, d.queue_position);
         startPolling();
-    </script>
+    } catch (e) {
+        showError(e.message);
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '⬇️ Download';
+    }
+}
+
+function showTask(filename, qpos) {
+    document.getElementById('taskCard').classList.remove('hidden');
+    document.getElementById('taskLabel').textContent = filename.replace(/_\d+\.mp4$/, '');
+    updateStatus('queued', 0, qpos ? `Antrian #${qpos}` : '');
+    document.getElementById('downloadBtn').classList.add('hidden');
+}
+
+function updateStatus(status, progress, info) {
+    const el = document.getElementById('taskStatus');
+    const map = {
+        queued: ['⏳ Antri', 'bg-yellow-900/50 text-yellow-300'],
+        downloading: ['⬇️ Download', 'bg-blue-900/50 text-blue-300'],
+        done: ['✅ Selesai', 'bg-green-900/50 text-green-300'],
+        error: ['❌ Error', 'bg-red-900/50 text-red-300']
+    };
+    const [text, cls] = map[status] || ['Unknown', ''];
+    el.textContent = text;
+    el.className = 'text-xs px-3 py-1 rounded-full ' + cls;
+    document.getElementById('progressBar').style.width = progress + '%';
+    document.getElementById('progressText').textContent = progress.toFixed(1) + '%';
+    if (info) document.getElementById('taskInfo').textContent = info;
+}
+
+function startPolling() {
+    if (pollInterval) clearInterval(pollInterval);
+    pollInterval = setInterval(async () => {
+        if (!currentTaskId) return;
+        try {
+            const r = await fetch(`/api/status/${currentTaskId}`);
+            const d = await r.json();
+            if (d.status === 'done') {
+                clearInterval(pollInterval);
+                updateStatus('done', 100, '');
+                document.getElementById('downloadBtn').classList.remove('hidden');
+                document.getElementById('downloadLink').href = d.download_url;
+            } else if (d.status === 'error') {
+                clearInterval(pollInterval);
+                updateStatus('error', 0, d.error_msg || '');
+            } else {
+                updateStatus(d.status, d.progress || 0, d.status === 'downloading' ? '' : '');
+            }
+        } catch (e) {}
+    }, 2000);
+}
+
+function showError(msg) {
+    const el = document.getElementById('error');
+    el.textContent = '❌ ' + msg;
+    el.classList.remove('hidden');
+}
+function hideError() { document.getElementById('error').classList.add('hidden'); }
+</script>
 </body>
 </html>
